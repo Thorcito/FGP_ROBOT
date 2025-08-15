@@ -1,0 +1,5 @@
+build/
+devl/
+logs/
+*.pyc
+*.swp
