@@ -27,22 +27,22 @@ class BallTrackerSync:
         self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.49))
 
         # HSV & morphology (your fixed settings)
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [106, 0, 0]), dtype=np.uint8)
-        self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [179, 255, 255]), dtype=np.uint8)
-        self.blur_ksize = int(rospy.get_param("~blur", 1))
-        self.open_it    = int(rospy.get_param("~open", 10))
+        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [95, 102,  44]), dtype=np.uint8)
+        self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [162, 253, 249]), dtype=np.uint8)
+        self.blur_ksize = int(rospy.get_param("~blur", 3))
+        self.open_it    = int(rospy.get_param("~open", 4))
         self.close_it   = int(rospy.get_param("~close", 10))
 
         # Geometry filters
-        self.min_area_px     = int(rospy.get_param("~min_area_px", 150))
+        self.min_area_px     = int(rospy.get_param("~min_area_px", 80))
         self.min_circularity = float(rospy.get_param("~min_circularity", 0.6))
 
         # Depth sampling
-        self.depth_patch = int(rospy.get_param("~depth_patch", 11))
+        self.depth_patch = int(rospy.get_param("~depth_patch", 15))
 
         # Path for RViz
         self.path_publish = bool(rospy.get_param("~publish_path", True))
-        self.path_maxlen  = int(rospy.get_param("~path_maxlen", 100))
+        self.path_maxlen  = int(rospy.get_param("~path_maxlen", 50))
         self._poses = []
 
         # Camera intrinsics
@@ -113,6 +113,7 @@ class BallTrackerSync:
             if peri <= 0:
                 continue
             circ = 4.0*np.pi*area/(peri*peri)
+            #rospy.loginfo(circ)
             if circ < self.min_circularity:
                 continue
             (x, y), r = cv2.minEnclosingCircle(c)
