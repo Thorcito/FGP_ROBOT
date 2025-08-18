@@ -1,1 +1,0 @@
-/home/nadir/Desktop/Robo_Project_ws/devel/.private/catkin_tools_prebuild/local_setup.zsh

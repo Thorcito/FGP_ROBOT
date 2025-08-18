@@ -1,5 +1,41 @@
+# ROS / Catkin build artifacts
 build/
-devl/
+devel/
 logs/
+install/
+
+# Catkin/CMake generated files
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+
+# ROS/Colcon
+.colcon/
+install.log
+
+# Python
+__pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+
+# IDE/editor files
+.vscode/
+.idea/
 *.swp
+*.swo
+*.bak
+*~
+.DS_Store
+
+# Other system files
+*.log
+*.out
+*.o
+*.so
+

@@ -1,8 +1,0 @@
-prefix=/home/nadir/Desktop/Robo_Project_ws/devel/.private/l515_tools
-
-Name: l515_tools
-Description: Description of l515_tools
-Version: 0.0.0
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
