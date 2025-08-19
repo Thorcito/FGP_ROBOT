@@ -14,7 +14,7 @@ class BallKFPredictor:
         self.g_cam = np.array(rospy.get_param("~g_cam", [0.0, 9.81, 0.0]), dtype=np.float64)
 
         # per-axis measurement / process (accel) noise
-        self.sigma_pos_xyz = np.array(rospy.get_param("~sigma_pos_xyz", [0.006, 0.012, 0.006]), dtype=np.float64)
+        self.sigma_pos_xyz = np.array(rospy.get_param("~sigma_pos_xyz", [0.1, 0.007, 0.07]), dtype=np.float64)
         self.sigma_acc_xyz = np.array(rospy.get_param("~sigma_acc_xyz", [8.0, 8.0, 6.0]), dtype=np.float64)
 
         # proper initialization std devs (used only at first detection)
@@ -31,14 +31,26 @@ class BallKFPredictor:
 
         # filtered path buffer
         self.keep_filtered_path = bool(rospy.get_param("~keep_filtered_path", True))
-        self.filtered_path_max  = int(rospy.get_param("~filtered_path_max", 500))
+        self.filtered_path_max  = int(rospy.get_param("~filtered_path_max", 50))
         self.filtered_path = []
+
+        # ------ Mahalanobis gating params (new) ------
+        # 3-DoF chi^2 gates: 95%=7.81, 99%=11.34, 99.9%=16.27
+        self.meas_gate_chi2_soft = float(rospy.get_param("~meas_gate_chi2_soft", 11.34))  # start downweighting
+        self.meas_gate_chi2_hard = float(rospy.get_param("~meas_gate_chi2_hard", 16.27))  # hard reject big spikes
+        self.meas_soft_factor_max = float(rospy.get_param("~meas_soft_factor_max", 15.0)) # cap R inflation
+        self.meas_min_abs_jump_m = float(rospy.get_param("~meas_min_abs_jump_m", 0.15))   # require big jump vs last z to hard-reject
+        self.gating_warmup_updates = int(rospy.get_param("~gating_warmup_updates", 3))    # skip gating on first few updates
 
         # ---------- state ----------
         # x = [px,py,pz, vx,vy,vz]^T
         self.x = None
         self.P = None
         self.t_last = None
+
+        # gating state
+        self.z_prev = None              # last accepted measurement
+        self.updates_since_init = 0     # to handle warm-up
 
         # ---------- pubs/sub ----------
         self.pub_filt_pt   = rospy.Publisher("/ball_cam/point_filt", PointStamped, queue_size=20)
@@ -56,6 +68,7 @@ class BallKFPredictor:
         self.pub_sigma_px = rospy.Publisher("/ball_kf/sigma_px", Float32, queue_size=20)
         self.pub_sigma_py = rospy.Publisher("/ball_kf/sigma_py", Float32, queue_size=20)
         self.pub_sigma_pz = rospy.Publisher("/ball_kf/sigma_pz", Float32, queue_size=20)
+        self.pub_maha_d2  = rospy.Publisher("/ball_kf/maha_d2", Float32, queue_size=20)   # new: for visibility
 
         rospy.Subscriber(self.input_topic, PointStamped, self.cb_meas, queue_size=50)
 
@@ -98,6 +111,37 @@ class BallKFPredictor:
         # innovation
         y = z - self.H.dot(self.x)
         S = self.H.dot(self.P).dot(self.H.T) + self.R
+
+        # Mahalanobis distance^2: yᵀ S⁻¹ y  (solve for stability)
+        Sinv_y = np.linalg.solve(S, y)          # S * x = y  -> x = S⁻¹ y
+        d2 = float(y.dot(Sinv_y))
+        self.pub_maha_d2.publish(Float32(data=d2))
+
+        # ---- GATING LOGIC ----
+        # Skip gating briefly after (re)init to avoid ignoring genuine motion onset.
+        do_gate = (self.updates_since_init >= self.gating_warmup_updates)
+
+        R_eff = self.R
+        if do_gate:
+            # Big single-frame spike? Require both: high Mahalanobis AND a big jump vs last accepted measurement.
+            jump_ok = False
+            if self.z_prev is not None:
+                jump_norm = float(np.linalg.norm(z - self.z_prev))
+                jump_ok = (jump_norm >= self.meas_min_abs_jump_m)
+
+            if d2 > self.meas_gate_chi2_hard and (self.z_prev is None or jump_ok):
+                # Hard reject: keep prediction only
+                rospy.logwarn_throttle(1.0, f"KF: hard-rejected meas (d2={d2:.2f}, jump={jump_ok})")
+                # Publish from predicted state for continuity
+                self.publish_filtered(stamp)
+                self.publish_prediction(stamp)
+                return
+            elif d2 > self.meas_gate_chi2_soft:
+                # Soft down-weight: inflate R proportional to exceedance, capped
+                factor = min(self.meas_soft_factor_max, d2 / self.meas_gate_chi2_soft)
+                R_eff = self.R * factor
+                S = self.H.dot(self.P).dot(self.H.T) + R_eff
+
         # K = P Hᵀ S⁻¹  (solve instead of invert)
         K = self.P.dot(self.H.T)
         K = np.linalg.solve(S.T, K.T).T  # (Sᵀ \ (P Hᵀ))ᵀ
@@ -118,6 +162,10 @@ class BallKFPredictor:
         self.pub_sigma_py.publish(Float32(data=float(np.sqrt(self.P[1,1]))))
         self.pub_sigma_pz.publish(Float32(data=float(np.sqrt(self.P[2,2]))))
 
+        # remember this accepted measurement for jump check next time
+        self.z_prev = z.copy()
+        self.updates_since_init += 1
+
         self.publish_filtered(stamp)
         self.publish_prediction(stamp)
 
@@ -135,11 +183,12 @@ class BallKFPredictor:
             self.x = np.zeros(6); self.x[0:3] = z_meas
             self.P = np.diag([self.init_pos_std**2]*3 + [self.init_vel_std**2]*3)
             self.t_last = t
+            self.z_prev = z_meas.copy()
+            self.updates_since_init = 0
             self.publish_filtered(msg.header.stamp)
             self.publish_prediction(msg.header.stamp)
             return
 
-        
         dt_raw = t - self.t_last
         if dt_raw <= 0.0:
             return
