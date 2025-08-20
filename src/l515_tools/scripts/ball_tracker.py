@@ -36,9 +36,13 @@ class BallTrackerSync:
         # Geometry filters
         self.min_area_px     = int(rospy.get_param("~min_area_px", 80))
         self.min_circularity = float(rospy.get_param("~min_circularity", 0.5))
+        self.max_jump_m = float(rospy.get_param("~max_jump_m", 0.40))
+        self._last_xyz = None  # stores last accepted (X,Y,Z)
 
         # Depth sampling
         self.depth_patch = int(rospy.get_param("~depth_patch", 1))
+
+
 
         # Path for RViz
         self.path_publish = bool(rospy.get_param("~publish_path", True))
@@ -167,6 +171,21 @@ class BallTrackerSync:
         Y = (v - self.cy) * Z / self.fy
         #rospy.loginfo(f"XYpix=({u:.3f},{v:.3f})pix")
         #rospy.loginfo(f"XYZ=({X:.3f},{Y:.3f},{Z:.6f})m")
+        
+        if self.max_jump_m > 0:
+            if self._last_xyz is not None:
+                dx = X - self._last_xyz[0]
+                dy = Y - self._last_xyz[1]
+                dz = Z - self._last_xyz[2]
+                dist = (dx**2 + dy**2 + dz**2)**0.5
+                #rospy.loginfo(dist)
+                if dist > self.max_jump_m:
+                    rospy.logwarn_throttle(1.0, f"Bad Measurement (distance={dist:.2f})")
+                    self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
+                    self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
+                    self._last_xyz = (X,Y,Z)
+                    return
+        self._last_xyz = (X,Y,Z)
         stamp = rgb_msg.header.stamp  # use the synchronized timestamp
 
         # 5) Publish PlotJuggler-friendly topics

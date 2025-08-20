@@ -3,6 +3,7 @@ import rospy, numpy as np
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Header, Float32
+from visualization_msgs.msg import Marker
 
 class BallKFPredictor:
     def __init__(self):
@@ -42,6 +43,13 @@ class BallKFPredictor:
         self.meas_min_abs_jump_m = float(rospy.get_param("~meas_min_abs_jump_m", 0.15))   # require big jump vs last z to hard-reject
         self.gating_warmup_updates = int(rospy.get_param("~gating_warmup_updates", 3))    # skip gating on first few updates
 
+                # ---- plane-intersection params ----
+        self.plane_mode = rospy.get_param("~plane_mode", "z")   # "x" | "z"
+        self.x_plane_m  = float(rospy.get_param("~x_plane_m", 0.7))  # YZ plane at x = const
+        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const
+        self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 1.0))
+
+
         # ---------- state ----------
         # x = [px,py,pz, vx,vy,vz]^T
         self.x = None
@@ -57,6 +65,10 @@ class BallKFPredictor:
         self.pub_pred_pt   = rospy.Publisher("/ball_cam/pred_point", PointStamped, queue_size=20)
         self.pub_pred_path = rospy.Publisher("/ball_cam/pred_path", Path, queue_size=10)
         self.pub_filt_path = rospy.Publisher("/ball_cam/path_filt", Path, queue_size=10)
+        self.pub_hit_point = rospy.Publisher("/ball_cam/hit_point", PointStamped, queue_size=10)
+        self.pub_hit_time  = rospy.Publisher("/ball_cam/hit_time_s", Float32, queue_size=10)
+        self.pub_markers_static = rospy.Publisher("/ball_cam/markers_static", Marker, queue_size=1, latch=True)
+
 
         # diagnostics for PlotJuggler
         self.pub_innov_x = rospy.Publisher("/ball_kf/innov_x", Float32, queue_size=20)
@@ -79,6 +91,7 @@ class BallKFPredictor:
         # prebuild constant H and R
         self.H = np.zeros((3,6)); self.H[0,0]=self.H[1,1]=self.H[2,2]=1.0
         self.R = np.diag(self.sigma_pos_xyz**2)
+        self.publish_static_plane_markers()
 
     # ---------- model helpers ----------
     def F_Q_gvec(self, dt):
@@ -168,6 +181,8 @@ class BallKFPredictor:
 
         self.publish_filtered(stamp)
         self.publish_prediction(stamp)
+        self.publish_plane_hits(stamp)
+
 
     # ---------- callback ----------
     def cb_meas(self, msg: PointStamped):
@@ -239,6 +254,138 @@ class BallKFPredictor:
             ps.pose.orientation.w = 1.0
             path.poses.append(ps)
         self.pub_pred_path.publish(path)
+
+
+        # ---------- plane intersection helpers ----------
+    @staticmethod
+    def _solve_time_to_plane_1d(a, b, c, t_min=0.0, t_max=None, eps=1e-9):
+        """
+        Solve a*t^2 + b*t + c = 0 and return the smallest t >= t_min (and <= t_max if set).
+        Returns None if no admissible solution.
+        """
+        # Quadratic or linear?
+        if abs(a) < eps:
+            if abs(b) < eps:
+                # a≈0, b≈0 -> either infinite solutions (c≈0) or none
+                if abs(c) < eps:
+                    t = 0.0
+                else:
+                    return None
+            else:
+                t = -c / b
+            if t < t_min or (t_max is not None and t > t_max):
+                return None
+            return float(t)
+
+        # Proper quadratic
+        D = b*b - 4.0*a*c
+        if D < 0.0:
+            return None
+        sqrtD = np.sqrt(D)
+        t1 = (-b - sqrtD) / (2.0*a)
+        t2 = (-b + sqrtD) / (2.0*a)
+        candidates = []
+        for t in (t1, t2):
+            if t >= t_min and (t_max is None or t <= t_max):
+                candidates.append(float(t))
+        if not candidates:
+            return None
+        return min(candidates)
+
+    def intersect_yz_plane(self, x_plane):
+        """Hit YZ plane (x = x_plane). Returns (t_hit, p_hit ndarray) or (None, None)."""
+        if self.x is None: return (None, None)
+        p0 = self.x[0:3]; v0 = self.x[3:6]; g = self.g_cam
+        a = 0.5 * g[0]; b = v0[0]; c = p0[0] - x_plane
+        t_hit = self._solve_time_to_plane_1d(a, b, c, t_min=0.0, t_max=self.hit_horizon_s)
+        if t_hit is None: return (None, None)
+        return (t_hit, self.ballistic_pos(t_hit))
+
+    def intersect_xy_plane(self, z_plane):
+        """Hit XY plane (z = z_plane). Returns (t_hit, p_hit ndarray) or (None, None)."""
+        if self.x is None: return (None, None)
+        p0 = self.x[0:3]; v0 = self.x[3:6]; g = self.g_cam
+        a = 0.5 * g[2]; b = v0[2]; c = p0[2] - z_plane
+        t_hit = self._solve_time_to_plane_1d(a, b, c, t_min=0.0, t_max=self.hit_horizon_s)
+        if t_hit is None: return (None, None)
+        return (t_hit, self.ballistic_pos(t_hit))
+
+    def publish_plane_hits(self, stamp):
+        """Compute intersection(s) and publish the active hit (and optional per-plane debug)."""
+        if self.x is None: return
+        vx, vz = float(self.x[3]), float(self.x[5])
+
+        # Compute both (for optional debug topics)
+        t_yz, p_yz = self.intersect_yz_plane(self.x_plane_m)
+        t_xy, p_xy = self.intersect_xy_plane(self.z_plane_m)
+
+        # Select active plane
+        mode = (self.plane_mode).lower()
+        if mode == "x":
+            t_sel, p_sel = t_yz, p_yz
+        elif mode == "z":
+            t_sel, p_sel = t_xy, p_xy
+        if t_sel is None or p_sel is None:
+            return  # no admissible intersection within horizon
+
+        # Publish active hit
+        pt = PointStamped()
+        pt.header = Header(stamp=stamp, frame_id=self.frame_id)
+        pt.point.x, pt.point.y, pt.point.z = float(p_sel[0]), float(p_sel[1]), float(p_sel[2])
+        self.pub_hit_point.publish(pt)
+        self.pub_hit_time.publish(Float32(data=float(t_sel)))
+        rospy.loginfo_throttle(1.0, f"Time to intercept: (t={t_sel:.6f})")
+    
+    def publish_static_plane_markers(self):
+        """
+        Publish translucent slabs for the YZ (x = const) and XY (z = const) planes.
+        All visualization constants are hard-coded here on purpose.
+        """
+        # ---- hard-coded viz constants ----
+        PLANE_THICKNESS = 0.005   # m, thickness along the plane normal
+        YZ_SIZE_Y = 6.0           # m, extent along +Y/-Y
+        YZ_SIZE_Z = 4.0           # m, extent along +Z/-Z
+        XY_SIZE_X = 6.0           # m, extent along +X/-X
+        XY_SIZE_Y = 4.0           # m, extent along +Y/-Y
+        PLANE_ALPHA = 0.3       # translucency
+
+        now = rospy.Time.now()
+
+        # --- YZ plane at x = self.x_plane_m ---
+        if self.plane_mode == "auto" or self.plane_mode == "x":
+            yz = Marker()
+            yz.header.frame_id = self.frame_id
+            yz.header.stamp = now
+            yz.ns = "planes"; yz.id = 1
+            yz.type = Marker.CUBE; yz.action = Marker.ADD
+            yz.pose.orientation.w = 1.0
+            yz.pose.position.x = float(self.x_plane_m)
+            yz.pose.position.y = 0.0
+            yz.pose.position.z = 0.0
+            yz.scale.x = max(PLANE_THICKNESS, 1e-4)  # thickness along X
+            yz.scale.y = YZ_SIZE_Y                   # extent along Y
+            yz.scale.z = YZ_SIZE_Z                   # extent along Z
+            yz.color.r, yz.color.g, yz.color.b, yz.color.a = (255, 255, 0, PLANE_ALPHA)
+            self.pub_markers_static.publish(yz)
+
+        # --- XY plane at z = self.z_plane_m ---
+        if self.plane_mode == "auto" or self.plane_mode == "z":
+            xy = Marker()
+            xy.header.frame_id = self.frame_id
+            xy.header.stamp = now
+            xy.ns = "planes"; xy.id = 2
+            xy.type = Marker.CUBE; xy.action = Marker.ADD
+            xy.pose.orientation.w = 1.0
+            xy.pose.position.x = 0.0
+            xy.pose.position.y = 0.0
+            xy.pose.position.z = float(self.z_plane_m)
+            xy.scale.x = XY_SIZE_X                   # extent along X
+            xy.scale.y = XY_SIZE_Y                   # extent along Y
+            xy.scale.z = max(PLANE_THICKNESS, 1e-4)  # thickness along Z
+            xy.color.r, xy.color.g, xy.color.b, xy.color.a = (255, 255, 0, PLANE_ALPHA)
+            self.pub_markers_static.publish(xy)
+
+
 
 if __name__ == "__main__":
     rospy.init_node("ball_kf_predictor")
