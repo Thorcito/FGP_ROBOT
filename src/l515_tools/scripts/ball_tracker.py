@@ -27,7 +27,7 @@ class BallTrackerSync:
         self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.49))
 
         # HSV & morphology (your fixed settings)
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [108, 110,  46]), dtype=np.uint8)
+        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [108, 115,  0]), dtype=np.uint8)
         self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [170, 255, 255]), dtype=np.uint8)
         self.blur_ksize = int(rospy.get_param("~blur", 1))
         self.open_it    = int(rospy.get_param("~open", 2))
@@ -53,11 +53,11 @@ class BallTrackerSync:
         self.fx = self.fy = self.cx = self.cy = None
 
         # Publishers
-        self.pub_point   = rospy.Publisher("/ball/point", PointStamped, queue_size=10)
-        self.pub_pose    = rospy.Publisher("/ball/pose", PoseStamped, queue_size=10)
-        self.pub_path    = rospy.Publisher("/ball/path", Path, queue_size=10) if self.path_publish else None
-        self.pub_debug   = rospy.Publisher("/ball/debug_image", Image, queue_size=1)
-        self.pub_mask    = rospy.Publisher("/ball/debug_mask", Image, queue_size=1)
+        self.pub_point   = rospy.Publisher("/ball_meas/point", PointStamped, queue_size=10)
+        self.pub_pose    = rospy.Publisher("/ball_meas/pose", PoseStamped, queue_size=10)
+        self.pub_path    = rospy.Publisher("/ball_meas/path", Path, queue_size=10) if self.path_publish else None
+        self.pub_debug   = rospy.Publisher("/ball_meas/debug_image", Image, queue_size=1)
+        self.pub_mask    = rospy.Publisher("/ball_meas/debug_mask", Image, queue_size=1)
 
         # Subscribers (camera info + synchronized image pair)
         rospy.Subscriber(self.cam_info_topic, CameraInfo, self.caminfo_cb, queue_size=1)
