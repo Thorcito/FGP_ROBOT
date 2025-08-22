@@ -4,6 +4,8 @@ from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Header, Float32
 from visualization_msgs.msg import Marker
+import csv, os
+from datetime import datetime
 
 class BallKFPredictor:
     def __init__(self):
@@ -45,7 +47,8 @@ class BallKFPredictor:
         # ---- plane-intersection params ----
         self.plane_mode = rospy.get_param("~plane_mode", "x")   # "x" | "z"
         self.x_plane_m  = float(rospy.get_param("~x_plane_m", 0.7))  # YZ plane at x = const
-        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const
+        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const 0.7
+        self.exp_tag = float(rospy.get_param("~exp_tag", 10))
         self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 1.0))
 
         # ---- hit history for RViz ----
@@ -94,6 +97,36 @@ class BallKFPredictor:
         self.H = np.zeros((3,6)); self.H[0,0]=self.H[1,1]=self.H[2,2]=1.0
         self.R = np.diag(self.sigma_pos_xyz**2)
         self.publish_static_plane_markers()
+
+                # ---------- CSV logging ----------
+        # Keep the user-provided path EXACTLY as given (except ~ expansion).
+        # If it's relative, it will be created relative to the process CWD.
+        csv_param = rospy.get_param("~csv_path", "~/Desktop/Robo_Project_ws/src/l515_tools/scripts/Predictions.csv")
+        self.csv_path = os.path.expanduser(csv_param)   # DO NOT abspath unless you want to
+        self._csv_header_written = False
+
+        # Log where we're writing and from which CWD (helps when using roslaunch)
+        try:
+            cwd_now = os.getcwd()
+        except Exception:
+            cwd_now = "<unavailable>"
+        rospy.loginfo("CSV CWD: %s", cwd_now)
+        rospy.loginfo("CSV path (user-specified): %s", self.csv_path)
+
+        if self.csv_path:
+            d = os.path.dirname(self.csv_path)
+            if d:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                except Exception as e:
+                    rospy.logwarn("CSV: failed to create dir '%s': %s", d, e)
+            if os.path.exists(self.csv_path):
+                self._csv_header_written = True
+            rospy.loginfo("CSV logging enabled -> %s", self.csv_path)
+        else:
+            rospy.logwarn("CSV logging disabled: ~csv_path is empty")
+
+
 
     # ---------- model helpers ----------
     def F_Q_gvec(self, dt):
@@ -284,7 +317,7 @@ class BallKFPredictor:
             pt_h.point.x, pt_h.point.y, pt_h.point.z = float(p_sel[0]), float(p_sel[1]), float(p_sel[2])
             self.pub_hit_point.publish(pt_h)
             self.pub_hit_time.publish(Float32(data=float(t_sel)))
-            rospy.loginfo(f"Time to intercept: (t={t_sel:.6f})")
+            rospy.loginfo_throttle(0.0, f"Time to intercept: (t={t_sel:.6f})")
 
             pose_h = PoseStamped(); pose_h.header = hdr
             pose_h.pose.position.x = pt_h.point.x
@@ -298,6 +331,10 @@ class BallKFPredictor:
             path_h = Path(); path_h.header = hdr
             path_h.poses = self.hit_history
             self.pub_hit_history.publish(path_h)
+            return t_sel, p_sel
+        else:
+            return None, None
+
     # ---------- callback ----------
     def cb_meas(self, msg: PointStamped):
         if msg.header.frame_id and msg.header.frame_id != self.frame_id:
@@ -315,7 +352,11 @@ class BallKFPredictor:
             self.z_prev = z_meas.copy()
             self.updates_since_init = 0
             # unified publishing on first detection (treat as accepted)
-            self.publish_all(msg.header.stamp, accepted_meas=True)
+            t_hit, p_hit = self.publish_all(msg.header.stamp, accepted_meas=True)
+
+            # CSV row for first frame
+            if self.csv_path:
+                self.write_csv(msg.header.stamp, z_meas, True, p_hit, t_hit)
             return
 
         dt_raw = t - self.t_last
@@ -326,7 +367,10 @@ class BallKFPredictor:
 
         self.predict_step(dt)
         accepted, d2 = self.update_step(z_meas)
-        self.publish_all(msg.header.stamp, accepted)
+        t_hit, p_hit = self.publish_all(msg.header.stamp, accepted)
+
+        if self.csv_path:
+            self.write_csv(msg.header.stamp, z_meas, accepted, p_hit, t_hit)
 
     # ---------- static plane markers (unchanged except color range) ----------
     def publish_static_plane_markers(self):
@@ -370,6 +414,53 @@ class BallKFPredictor:
             xy.scale.z = max(PLANE_THICKNESS, 1e-4)
             xy.color.r, xy.color.g, xy.color.b, xy.color.a = (1.0, 1.0, 0.0, PLANE_ALPHA)
             self.pub_markers_static.publish(xy)
+    
+    def write_csv(self, stamp_ros, meas, accepted_meas, p_hit, t_hit):
+        if not self.csv_path:
+            return
+        stamp_iso = datetime.now().isoformat()
+        stamp_ros_s = float(stamp_ros.to_sec())
+
+        meas_x, meas_y, meas_z = map(float, meas.tolist())
+
+        if accepted_meas:
+            fx, fy, fz = float(self.x[0]), float(self.x[1]), float(self.x[2])
+        else:
+            fx = fy = fz = ""
+        if p_hit is not None:
+            hx, hy, hz = map(float, p_hit.tolist())
+        else:
+            hx = hy = hz = ""
+        thit = float(t_hit) if t_hit is not None else ""
+
+        header = [
+            "exp_tag"
+            "stamp_iso", "stamp_ros_s",
+            "meas_x", "meas_y", "meas_z",
+            "filt_x", "filt_y", "filt_z",
+            "hit_x", "hit_y", "hit_z",
+            "t_hit_s", "accepted"
+        ]
+
+        row = [
+            self.exp_tag,
+            stamp_iso, stamp_ros_s,
+            meas_x, meas_y, meas_z,
+            fx, fy, fz,
+            hx, hy, hz,
+            thit, int(bool(accepted_meas))
+        ]
+
+        try:
+            write_header_now = not self._csv_header_written
+            with open(self.csv_path, "a", newline="") as f:
+                w = csv.writer(f)
+                if write_header_now:
+                    w.writerow(header)
+                    self._csv_header_written = True
+                w.writerow(row)
+        except Exception as e:
+            rospy.logwarn("CSV: failed to write '%s': %s", self.csv_path, e)
 
 if __name__ == "__main__":
     rospy.init_node("ball_kf_predictor")
