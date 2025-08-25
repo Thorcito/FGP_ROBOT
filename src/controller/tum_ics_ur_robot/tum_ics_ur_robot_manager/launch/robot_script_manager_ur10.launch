@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<launch>
+   <node name="robot_script_manager_ur10" pkg="tum_ics_ur_robot_manager" type="robot_script_manager_ur10" output="screen"/>	
+</launch>

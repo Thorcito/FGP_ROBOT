@@ -1,0 +1,36 @@
+# Gains for the Proportional-Derivative Joint Space Controller
+# P and D gains for each axis.
+wb_basemdl:
+ #Masses [kg]
+ massBase: [0.0, 0.0, 20.0, 0.0, 0.0, 0.0]
+
+ #Lengths [m]
+ lengthBase: [0.75, 0.0, 0.0, 0.0, 0.225, 0.5]
+
+ #Control Period [ms]
+ ctrlPeriod: 2
+
+ #Max Speed [m/s,m/s,deg/s]
+ qpBaseMax: 0.15
+
+ #Gravity norm
+ g: 9.81
+
+ #Friction
+ Beta: [40,40,40]
+
+ #Butter Filter cutoff frequency (Sample time is taken from control period) [Hz]
+ cutOffFreq: 20
+
+ #Inertia 1
+ I1: [1,1,1,1,1,1]
+
+ #Inertia 2
+ I2: [1,1,1,1,1,1]
+
+ #Inertia 3
+ I3: [1,1,1,1,1,1]
+
+ #K
+ K: [1,1,1]
+

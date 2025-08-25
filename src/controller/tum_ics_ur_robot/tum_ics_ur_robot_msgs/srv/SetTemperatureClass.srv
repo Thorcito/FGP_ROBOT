@@ -1,0 +1,3 @@
+int32 classID  # 5 clasess: 1 VeryCold, 2 Cold, 3 Neutral, 4 Warm, 5 VeryHot 
+---
+bool success

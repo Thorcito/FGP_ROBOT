@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<launch>
+
+	<arg name="ARM" default="right"/>
+
+   <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_$(arg ARM)_Arm_FD.ini"/>
+	<group ns="tom">
+		<group ns="arm_$(arg ARM)">
+			<group ns="arm">
+				<node name="testSimpleEffortCtrl" pkg="ur_robot_controllers" type="testMultipleControllers" args="$(arg CONFIG_FILE_PATH)" output="screen">
+					<rosparam file="$(find ur_robot_controllers)/launch/configs/pidInt.yaml" command="load" />
+					<rosparam file="$(find ur_robot_controllers)/launch/configs/pidCtrl.yaml" command="load" />
+					<rosparam file="$(find ur_robot_controllers)/launch/configs/sosmOpCtrl.yaml" command="load" />
+			  	</node>
+			</group>			
+		</group>
+	</group>
+</launch>

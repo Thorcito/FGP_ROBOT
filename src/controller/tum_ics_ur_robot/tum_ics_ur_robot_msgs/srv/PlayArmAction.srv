@@ -1,0 +1,7 @@
+string skill_id
+float64[6] pose_d
+float64[6] duration
+int32 special_command
+---
+int32 motion_result_id
+string motion_result_label

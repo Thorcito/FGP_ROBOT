@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+
+    <arg name="ARM" default="right"/>
+	<arg name="ROBOT" default="sim"/>
+    <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_right_Arm_FD_gazebo.ini"/>
+
+    <group ns="tom">
+	<group ns="arm_$(arg ARM)">
+
+	<node name="testJointCtrl" pkg="tum_ics_ur_robot_controllers" type="testJointControl" args="$(arg CONFIG_FILE_PATH)" output="screen">
+		<rosparam file="$(find tum_ics_ur_robot_controllers)/launch/configs/pidInt.yaml" command="load" />
+        <rosparam file="$(find tum_ics_ur_robot_controllers)/launch/configs/pidCtrl.yaml" command="load" />		
+		<rosparam file="$(find tum_ics_ur_robot_controllers)/launch/configs/sosmCtrl.yaml" command="load" />
+  	</node>
+  	
+  	</group>
+	</group>
+</launch>

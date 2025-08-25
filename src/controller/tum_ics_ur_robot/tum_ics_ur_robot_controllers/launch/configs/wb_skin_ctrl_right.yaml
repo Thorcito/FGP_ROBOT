@@ -1,0 +1,76 @@
+# Gains for the Proportional-Derivative Joint Space Controller
+# P and D gains for each axis.
+wb_skinctrl: 
+ #proportial
+ gains_p: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+ 
+ #derivative
+ gains_d: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+
+ #integral
+ gains_i: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+
+ #damping stop 
+ gains_d_stop: [10, 10, 10, 10, 10, 10]
+
+ #Amp Factor for SplineControl fusion
+ spline_factor: [1, 1, 1, 1, 1, 1]
+
+ #Proportional Factor to compute the increments in the Xef_wd
+ p_xef: [0.00001, 0.00001, 0.00001]
+
+ #Amplification Factor for the wrist joints[1.4, 1.4, 1.7, 2.5, 2.5, 2.5]
+ taus_xef: [1.4, 1.4, 1.7, 2.5, 5, 2.5]  
+
+ #Arm
+ arm:
+  #proximity threshold
+  proxy_threshold: 0.05
+  
+  #force threshold
+  force_threshold: 0.08
+
+  #Proximity Gains (for each joint) [1.7510, 1.75150, 1.7510, 1.7510, 1.7510, 1.7510]
+  proxy_gains: [1.7510, 1.75150, 1.7510, 1.7510, 1.7510, 1.7510]
+
+  #Force Gains
+  force_gains: [0.9740, 0.9740, 0.9740, 0.9740, 0.9740, 0.9740]
+
+  #K0 QP joint limit convergence rate
+  k0: 100
+
+  #K1 QP speed limit convergence rate
+  k1: 100
+
+  #K2 Stiffness switch
+  k2: 1 
+
+  #PSI QP Weighting matrix
+  Psi: [1,1,1,0.1,0.1,0.1]
+
+  #DeltaTau
+  deltaTau: 0.01
+
+  #qU [0.1,-1.4,0.1,-1.4,0.1,0.1][6.28318530718,6.28318530718,6.28318530718,6.28318530718,6.28318530718,6.28318530718]
+  qU: [6.28318530718,6.28318530718,6.28318530718,6.28318530718,6.28318530718,6.28318530718]
+
+  #qL [-0.1,-1.6,-0.1,-1.6,-0.1,-0.1][-6.28318530718,-6.28318530718,-6.28318530718,-6.28318530718,-6.28318530718,-6.28318530718]
+  qL: [-6.28318530718,-6.28318530718,-6.28318530718,-6.28318530718,-6.28318530718,-6.28318530718]
+
+  #qpU
+  qpU: [90,90,90,90,90,90]
+
+  #qpL
+  qpL: [-90,-90,-90,-90,-90,-90]
+
+  #TauMax
+  TauMax: [5,5,5,5,5,5]
+
+  #Md
+  Md: [2.5,2.5,2.5,2.5,2.5,2.5]
+
+  #Dd
+  Dd: [-5,-5,-5,-5,-5,-5]
+
+  #Sd
+  Sd: [20,20,20,20,20,20]

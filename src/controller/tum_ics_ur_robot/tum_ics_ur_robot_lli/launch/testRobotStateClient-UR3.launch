@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<launch>
+        <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configUR3.ini"/>
+        <node name="testRobotStateClientNode" pkg="tum_ics_ur_robot_lli" type="robot_state_client" args="$(arg CONFIG_FILE_PATH)" output="screen">
+                <!--rosparam file="$(find ur_robot_lli)/launch/configs/simpleEffortCtrl.yaml" command="load" /-->
+  	</node>
+</launch>

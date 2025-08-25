@@ -1,0 +1,6 @@
+string skill_id
+float64[6] pose_d
+float64 duration
+---
+int32 request_result_id
+string request_result_label

@@ -1,0 +1,5 @@
+string skill_id
+int32 special_command
+---
+int32 request_result_id
+string request_result_label

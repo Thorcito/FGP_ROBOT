@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<launch>
+   <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_right_Arm_FD.ini"/>
+	<node name="testSOSMControl" pkg="tum_ics_ur_robot_controllers" type="testSOSMControl" args="$(arg CONFIG_FILE_PATH)" output="screen">
+		<rosparam file="$(find ur_robot_controllers)/launch/configs/pidInt.yaml" command="load" />
+      <rosparam file="$(find ur_robot_controllers)/launch/configs/pidCtrl.yaml" command="load" />		
+		<rosparam file="$(find ur_robot_controllers)/launch/configs/sosmCtrl.yaml" command="load" />
+  	</node>
+</launch>

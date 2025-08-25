@@ -1,0 +1,3 @@
+---
+string[] names		# the names of the script sub programs
+bool[] enabled		# the states of the script sub programs

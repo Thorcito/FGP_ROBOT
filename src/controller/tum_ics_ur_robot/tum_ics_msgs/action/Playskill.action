@@ -1,0 +1,23 @@
+#goal definition
+int32 skill_id
+float64[] pose_d
+float64[] velocity_d
+float64[] duration
+int32 priority
+int32[] special_flags
+---
+#result definition
+int32 result_code
+string result_string
+---
+#feedback
+float64[] pose
+float64[] velocity
+float64[] torque
+float64[] error_pose
+float64[] error_velocity
+int32 action_status
+int32 current_action
+string current_action_label
+int32 current_special_cmd
+

@@ -1,0 +1,6 @@
+---
+string[] action_names
+int32[] action_types
+ur_arm_msgs/Special_cmd[] special_commands
+int32[] updatable
+int32[] motion_types

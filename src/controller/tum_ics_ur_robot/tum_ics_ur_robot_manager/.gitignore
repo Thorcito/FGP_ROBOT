@@ -1,0 +1,15 @@
+lib
+bin
+devel
+build
+install
+msg_gen
+srv_gen
+*.txt.user
+*.cfgc
+*.autosave
+*~
+ROS_NOBUILD
+.catkin_workspace
+.gitmodules
+CATKIN_IGNORE

@@ -1,0 +1,69 @@
+#ifndef MATHTOOLS_H
+#define MATHTOOLS_H
+
+
+#include<ur_robot_lli/EigenDefs.h>
+#include<ur_robot_lli/SharedDefs.h>
+
+namespace ur_robot_lli{
+namespace RobotTools{
+
+class MathTools
+{
+    //Vars
+public:
+    static const double u1_2;
+    static const double u1_4;
+    static const double u1_8;
+    static const double u1_16;
+    static const double u3_16;
+    static const double u1_32;
+    static const double u3_4;
+    static const double u3_8;
+
+    static Vector3d Z3();//0,0,0
+    static Vector3d Zz();//0,0,1
+    static Vector4d Z4();//0,0,0,0
+    static Vector4d Zh();//0,0,0,1
+
+    static Matrix3d Rx(double theta_rad);
+    static Matrix3d Ry(double theta_rad);
+    static Matrix3d Rz(double theta_rad);
+
+    static Matrix3d Rxd(double theta_deg);
+    static Matrix3d Ryd(double theta_deg);
+    static Matrix3d Rzd(double theta_deg);
+
+    static void Vector2ADouble(Vector6d &in, VDouble &out);
+
+
+    static Vector3d GetEulerAngles(const Matrix3d &R, double sign, double phi_old);
+    static void ContinuousEuler(Vector3d &eulerAd, Vector3d &eulerAd_Old);
+    static void FilterButter(Vector3d &x, Vector3d &xf, const Vector3d &bButter, const Vector3d &aButter);
+
+    static Matrix3d Bmat(Vector3d eulerAngles);
+
+
+
+    static VVector6d getJointPVT5(const Vector6d& start, const Vector6d& goal, double t_current, double t_total);
+
+    static Vector3d getJointPVT5(const double start, const double goal, double t_current, double t_total);
+
+    static void IntHeun(double x, double x_1, double ix_1, double &ix, double midh);
+
+protected:
+    MathTools();
+    //Funcs
+public:
+    //~MathTools();
+
+
+private:
+
+};
+
+
+}
+}
+
+#endif // MATHTOOLS_H

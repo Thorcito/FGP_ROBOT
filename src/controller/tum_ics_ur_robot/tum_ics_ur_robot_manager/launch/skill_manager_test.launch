@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+   <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_right_Arm_FD.ini"/>
+	<node name="skill_manager_test1" pkg="ur_robot_manager" type="skill_manager_test" args="$(arg CONFIG_FILE_PATH)" output="screen">
+	  <rosparam file="$(find ur_robot_controllers)/launch/configs/pidInt.yaml" command="load" />
+      <rosparam file="$(find ur_robot_controllers)/launch/configs/pidCtrl.yaml" command="load" />		
+	  <rosparam file="$(find ur_robot_controllers)/launch/configs/sosmCtrl.yaml" command="load" />
+      <rosparam file="$(find tom_configs)/Skills/skills_default.yaml" command="load" />
+  	</node>
+</launch>

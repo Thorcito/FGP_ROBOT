@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+	<arg name="ARM" default="left"/>
+  <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_left_Arm_FD.ini"/>
+
+	<group ns="tom">
+	<group ns="arm_$(arg ARM)">
+	<group ns="arm">
+		<node name="newCommInterfaceTest1" pkg="ur_robot_controllers" type="newCommInterfaceTest" args="$(arg CONFIG_FILE_PATH)" output="screen"/>
+	</group>			
+	</group>
+	</group>
+
+</launch>

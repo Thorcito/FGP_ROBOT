@@ -1,0 +1,21 @@
+# Gains for the Proportional-Derivative Joint Space Controller
+# P and D gains for each axis.
+ball_catcher_controller: 
+  jointspace:
+    #proportional
+    gains_p: [8.5, 8.5, 9.3, 10.5, 12.7, 2.6]
+    #derivative
+    gains_d: [79, 79, 72, 64, 11, 50]
+    # Desired position
+    goal: [0, -1.578, 1.578, -1.578, -1.578, 0]          #goal: [0, -1.578, -1.578, -1.578, 1.578, 0]
+    # Desired duration
+    duration: 6.0
+  
+  cartesianspace:
+    #proportional
+    gains_p: [50, 50, 50, 20, 10, 5]                        # [50, 50, 50, 20, 10, 5]
+    #derivative
+    gains_d: [120, 100, 100, 80, 10, 5]                     # [100, 75, 75, 73, 15, 5] whats up with q5
+    #integral part
+    gains_i: [30, 30, 30, 10, 10, 10]
+

@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<launch>
+  <node name="skill_list_test1" pkg="ur_robot_manager" type="skill_list_test" args="" output="screen">
+	<rosparam file="$(find tom_configs)/Skills/skills_default.yaml" command="load" />	
+  </node>
+</launch>

@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<launch>
+	<arg name="ARM" default="right"/>
+ 	<!--arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_right_Arm_FD.ini"/-->
+	<arg name="ROBOT_IP_ADDR" default="192.168.1.7"/>
+	<node name="robotStateClientTest" pkg="ur_robot_controllers" type="robotStateClientTest" args="$(arg ROBOT_IP_ADDR)" output="screen"/>
+
+</launch>

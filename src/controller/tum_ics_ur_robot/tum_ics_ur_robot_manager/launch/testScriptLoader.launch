@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+	<arg name="ARM" default="left"/>
+        <arg name="PC_IP_ADDR" default="192.168.0.101"/>
+        <arg name="ROBOT_IP_ADDR" default="192.168.0.100"/>
+	<arg name="MANAGER_PORT" default="50004"/>
+        <arg name="SCRIPT_FILE_PATH" default="$(find tom_configs)/ScriptManager/Scripts/simpleScript"/>
+
+   	<node name="robot_script_manager1" 
+		pkg="tum_ics_ur_robot_manager" 
+                type="testScriptLoader"
+		args="$(arg SCRIPT_FILE_PATH) $(arg PC_IP_ADDR) $(arg ROBOT_IP_ADDR) $(arg MANAGER_PORT)" output="screen"/>	
+
+</launch>

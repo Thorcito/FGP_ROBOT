@@ -1,0 +1,3 @@
+# this service makes the ur_arm_controls to reload the gains from parameter server
+---
+bool confirm_mode

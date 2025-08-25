@@ -1,0 +1,9 @@
+build
+installed
+*~
+*.txt.user
+*.pro.user
+*.hex
+*.ods#
+CATKIN_IGNORE
+*.swp

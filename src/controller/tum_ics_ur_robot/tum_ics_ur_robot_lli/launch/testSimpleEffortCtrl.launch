@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<launch>
+        <arg name="CONFIG_FILE_PATH" default="$(find tom_configs)/Arms/parameters/arm_configs/configTOM_right_Arm_FD.ini"/>
+	<node name="testSimpleEffortCtrl" pkg="ur_robot_lli" type="testScriptLoader" args="$(arg CONFIG_FILE_PATH)" output="screen">
+		<rosparam file="$(find ur_robot_lli)/launch/configs/simpleEffortCtrl.yaml" command="load" />
+  	</node>
+</launch>

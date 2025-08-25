@@ -1,0 +1,4 @@
+string motion_name
+---
+int32 motion_result_id
+string motion_result_label

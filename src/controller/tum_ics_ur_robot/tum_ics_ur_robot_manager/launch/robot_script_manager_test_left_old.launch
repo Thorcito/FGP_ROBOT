@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+	<arg name="ARM" default="left"/>
+  <arg name="PC_IP_ADDR" default="192.168.1.3"/>
+  <arg name="ROBOT_IP_ADDR" default="192.168.1.6"/>
+	<arg name="SCRIPT_FILE_PATH" default="$(find tom_configs)/LacqueyGrippers/parameters/Scripts/scriptManagerLeftTest"/>
+
+	<group ns="tom">
+	<group ns="arm_$(arg ARM)">
+	<group ns="arm">
+   		<node name="robot_script_manager1" pkg="ur_robot_manager" type="robot_script_manager" args="$(arg SCRIPT_FILE_PATH) $(arg PC_IP_ADDR) $(arg ROBOT_IP_ADDR)" output="screen"/>
+	</group>			
+	</group>
+	</group>
+
+</launch>

@@ -1,0 +1,4 @@
+string name	# the name of the script sub program 
+bool enable	# enable/disable program
+---
+bool ok		# change of the state was successfull/failed
