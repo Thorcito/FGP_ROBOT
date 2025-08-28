@@ -45,11 +45,11 @@ class BallKFPredictor:
         self.gating_warmup_updates = int(rospy.get_param("~gating_warmup_updates", 3))
 
         # ---- plane-intersection params ----
-        self.plane_mode = rospy.get_param("~plane_mode", "x")   # "x" | "z"
-        self.x_plane_m  = float(rospy.get_param("~x_plane_m", 0.7))  # YZ plane at x = const
-        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const 0.7
+        self.plane_mode = rospy.get_param("~plane_mode", "z")   # "x" | "z"
+        self.x_plane_m  = float(rospy.get_param("~x_plane_m", 0.7))  # YZ plane at x = const 
+        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const 0.5 is the min reading
         self.exp_tag = float(rospy.get_param("~exp_tag", 10))
-        self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 1.0))
+        self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 2.0))
 
         # ---- hit history for RViz ----
         self.hit_history = []
@@ -103,6 +103,7 @@ class BallKFPredictor:
         # If it's relative, it will be created relative to the process CWD.
         csv_param = rospy.get_param("~csv_path", "~/Desktop/Robo_Project_ws/src/l515_tools/scripts/Predictions.csv")
         self.csv_path = os.path.expanduser(csv_param)   # DO NOT abspath unless you want to
+        self.csv_path = None
         self._csv_header_written = False
 
         # Log where we're writing and from which CWD (helps when using roslaunch)
@@ -434,7 +435,7 @@ class BallKFPredictor:
         thit = float(t_hit) if t_hit is not None else ""
 
         header = [
-            "exp_tag"
+            "exp_tag",
             "stamp_iso", "stamp_ros_s",
             "meas_x", "meas_y", "meas_z",
             "filt_x", "filt_y", "filt_z",

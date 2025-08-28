@@ -24,7 +24,7 @@ class BallTrackerSync:
 
         # Depth handling
         self.depth_scale = float(rospy.get_param("~depth_scale", 0.001))
-        self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.49))
+        self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.5))
 
         # HSV & morphology (your fixed settings)
         self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [108, 115,  0]), dtype=np.uint8)
@@ -157,6 +157,7 @@ class BallTrackerSync:
         y0 = max(0, v - half); y1 = min(H, v + half + 1)
 
         patch = depth_u16[y0:y1, x0:x1].astype(np.float32) * self.depth_scale
+        #rospy.logerr(patch)
         cv2.rectangle(debug, (x0, y0), (x1, y1), (255, 255, 255), 4)
         valid = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z)
         if np.count_nonzero(valid) == 0:
