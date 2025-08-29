@@ -27,14 +27,14 @@ class BallTrackerSync:
         self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.5))
 
         # HSV & morphology (your fixed settings)
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [108, 115,  0]), dtype=np.uint8)
+        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 20,  0]), dtype=np.uint8)
         self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [170, 255, 255]), dtype=np.uint8)
         self.blur_ksize = int(rospy.get_param("~blur", 1))
-        self.open_it    = int(rospy.get_param("~open", 2))
-        self.close_it   = int(rospy.get_param("~close", 5))
+        self.open_it    = int(rospy.get_param("~open", 6))
+        self.close_it   = int(rospy.get_param("~close", 1))
 
         # Geometry filters
-        self.min_area_px     = int(rospy.get_param("~min_area_px", 80))
+        self.min_area_px     = int(rospy.get_param("~min_area_px", 400)) #150min 
         self.min_circularity = float(rospy.get_param("~min_circularity", 0.5))
         self.max_jump_m = float(rospy.get_param("~max_jump_m", 0.40))
         self._last_xyz = None  # stores last accepted (X,Y,Z)

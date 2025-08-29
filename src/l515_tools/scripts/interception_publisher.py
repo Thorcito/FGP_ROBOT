@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import rospy, math
 from tum_ics_ur10_controller_tutorial.msg import EETarget
-from geometry_msgs.msg import PointStamped, TransformStamped
+from geometry_msgs.msg import PointStamped, TransformStamped, PoseStamped
 from std_msgs.msg import Float32
+from nav_msgs.msg import Path
 
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
@@ -12,13 +13,11 @@ class KFtoEETargetBridge:
         # -------- params --------
         self.position_topic = rospy.get_param("~position_topic", "/ball_pred/hit_point")
         self.ttg_topic      = rospy.get_param("~t_to_int_topic", "/ball_pred/hit_time_s")
-        self.world_frame    = rospy.get_param("~world_frame", "world")
-        self.fixed_q_xyzw   = rospy.get_param("~fixed_orientation_xyzw",
-                                              [0.296595 , 0.206707 , -0.529188 , -0.767635])
-          
+        self.world_frame    = rospy.get_param("~world_frame", "world")   # controller's B/world
+        self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")      
 
-        # Settling gate: publish only when two consecutive points are close
-        self.stable_thresh_m = rospy.get_param("~stable_thresh_m", 0.3)  # 30cm cm default
+        self.pts = []
+        self.min_duration   = rospy.get_param("~min_duration_s", 0.1)
 
         # Camera TF params (publish a static TF here)
         self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
@@ -34,18 +33,16 @@ class KFtoEETargetBridge:
         if self.publish_camera_tf:
             self._publish_static_camera_tf()
 
-        self._wait_for_tf(self.world_frame, self.camera_frame, timeout=1.0)
-
         # -------- pubs/subs --------
         self.pub = rospy.Publisher("ee_target", EETarget, queue_size=1)
+        self.pub_point = rospy.Publisher("Bridge/punto", PointStamped, queue_size=10)
+        self.pub_path = rospy.Publisher("Bridge/path", Path, queue_size=10)
         rospy.Subscriber(self.position_topic, PointStamped, self.on_point, queue_size=10)
         rospy.Subscriber(self.ttg_topic, Float32, self.on_ttg, queue_size=10)
 
-        # -------- state --------
         self.last_ttg = None
-        self.prev_world_xyz = None  # for settling gate
 
-        rospy.loginfo(f"[bridge] stable_thresh_m={self.stable_thresh_m:.3f} m")
+        rospy.loginfo(f"[bridge] min_duration_s={self.min_duration:.2f}  ee_frame={self.ee_frame}")
 
     def _publish_static_camera_tf(self):
         t = TransformStamped()
@@ -65,14 +62,6 @@ class KFtoEETargetBridge:
         rospy.loginfo(f"[bridge] Published static TF {self.camera_parent} -> {self.camera_frame} "
                       f"xyz={self.cam_xyz} quat={self.cam_quat_xyzw}")
 
-    def _wait_for_tf(self, target, source, timeout=1.0):
-        try:
-            ok = self.buf.can_transform(target, source, rospy.Time(0), rospy.Duration(timeout))
-            if not ok:
-                rospy.logwarn(f"[bridge] TF {target} <- {source} not available after {timeout}s")
-        except Exception:
-            pass
-
     def on_ttg(self, msg: Float32):
         self.last_ttg = float(msg.data)
 
@@ -81,55 +70,79 @@ class KFtoEETargetBridge:
         if self.last_ttg is None:
             return
 
+        dur = float(self.last_ttg)
+        if dur < self.min_duration:
+            rospy.loginfo_throttle(0.0, f"[bridge] Tgo={dur:.3f}s < min {self.min_duration:.2f}s → skip")
+            return
+
         cam_frame = p_cam.header.frame_id or self.camera_frame
         try:
-            # camera -> world; Time(0) is fine for static camera
+            # camera -> world; Time(0) ok for static camera
             Tcw = self.buf.lookup_transform(self.world_frame, cam_frame,
                                             rospy.Time(0), rospy.Duration(0.05))
             p_world = do_transform_point(p_cam, Tcw).point
         except Exception as e:
-            rospy.logwarn_throttle(1.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
+            rospy.logwarn_throttle(0.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
             return
+        
+        stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
+        pto_w = PointStamped()
+        pto_w.header.stamp = stamp
+        pto_w.header.frame_id = self.world_frame
+        pto_w.point.x = p_world.x
+        pto_w.point.y = p_world.y
+        pto_w.point.z = p_world.z
+        self.pub_point.publish(pto_w)
+        pose = PoseStamped()
+        pose.header.stamp = stamp
+        pose.header.frame_id = self.world_frame
+        pose.pose.position.x = p_world.x
+        pose.pose.position.y = p_world.y
+        pose.pose.position.z = p_world.z
+        pose.pose.orientation.w = 1.0
+        self.pts.append(pose)
+        if len(self.pts) > 20:
+            self.pts = self.pts[-20:]
+        path_msg = Path()
+        path_msg.header.stamp = stamp
+        path_msg.header.frame_id = self.world_frame
+        path_msg.poses = list(self.pts)
+        self.pub_path.publish(path_msg)
 
-        xyz = (p_world.x, p_world.y, p_world.z)
+        #Confirms is inside the circle before publihsin
+        try:
+            T_w_ee = self.buf.lookup_transform(self.world_frame, self.ee_frame,
+                                            rospy.Time(0), rospy.Duration(0.02))
+            if not (-0.05 <= p_world.y <= 0.55 and 0.54 <= p_world.z <= 1.14):
+                rospy.logerr_throttle(0.0, f"[bridge] outside catching area time: {dur:.3f}")
+                return
+            q = T_w_ee.transform.rotation
+        except Exception as e:
+             rospy.logwarn_throttle(1.0, f"[bridge] EE TF lookup failed ({self.ee_frame}→{self.world_frame}): {e}")
+             return
+        
 
-        # ---- settling gate ----
-        if self.prev_world_xyz is None:
-            # First measurement: store only
-            self.prev_world_xyz = xyz
-            rospy.loginfo("[bridge] Settling: stored first measurement, not publishing yet.")
-            return
 
-        # Compare new vs previous; only publish if close (stable)
-        dx = xyz[0] - self.prev_world_xyz[0]
-        dy = xyz[1] - self.prev_world_xyz[1]
-        dz = xyz[2] - self.prev_world_xyz[2]
-        dist = math.sqrt(dy*dy + dz*dz)
-        rospy.logerr(dist)
-
-        if dist > self.stable_thresh_m:
-            # Too different → update reference and wait for next close sample
-            self.prev_world_xyz = xyz
-            rospy.loginfo_throttle(0.0, f"Settling: Δ={dist:.3f} m > {self.stable_thresh_m:.3f} m → "
-                                        f"update reference, skip publish.")
-            return
-
-        # Stable → publish and update reference
-        self.prev_world_xyz = xyz
-
+        # Build EETarget
         msg = EETarget()
-        msg.ee_target.position.x = xyz[0]
-        msg.ee_target.position.y = xyz[1]
-        msg.ee_target.position.z = xyz[2]
-        msg.ee_target.orientation.x = float(self.fixed_q_xyzw[0])
-        msg.ee_target.orientation.y = float(self.fixed_q_xyzw[1])
-        msg.ee_target.orientation.z = float(self.fixed_q_xyzw[2])
-        msg.ee_target.orientation.w = float(self.fixed_q_xyzw[3])
-        msg.duration = float(self.last_ttg)
+        msg.ee_target.position.x = p_world.x
+        msg.ee_target.position.y = p_world.y
+        msg.ee_target.position.z = p_world.z
+        msg.ee_target.orientation.x = q.x
+        msg.ee_target.orientation.y = q.y
+        msg.ee_target.orientation.z = q.z
+        msg.ee_target.orientation.w = q.w
+
+        msg.duration = dur
         self.pub.publish(msg)
 
-        rospy.loginfo_throttle(0.0, f"PUBLISHED{self.world_frame}: "
-                                    f"{xyz:.3f}  dur={self.last_ttg:.3f}s")
+        rospy.loginfo_throttle(
+            0.0,
+            f"[bridge] → ee_target @{self.world_frame}: "
+            f"({p_world.y:.3f},{p_world.z:.3f}), "
+            f"dur={dur:.3f}s  "
+            f"{'(current EE q)'}"
+        )
 
 if __name__ == "__main__":
     rospy.init_node("kf_to_ee_target_bridge")

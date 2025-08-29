@@ -144,6 +144,9 @@ namespace tum_ics_ur_robot_lli
       // DeltaX_i.setZero();
       state_ = INITIALIZED;
       theta_ = model_.parameterInitalGuess();
+
+      bool use_cartesian_spline_ = false;
+
       return true;
     }
 
@@ -224,7 +227,7 @@ namespace tum_ics_ur_robot_lli
         state_changed = true;
       }
 
-      if ((state_ == IDLE || state_ == CARTESIAN_SPLINE) && start_cartesian_spline_)
+      if ((state_ == IDLE || state_ == CARTESIAN_SPLINE) && start_cartesian_spline_ && use_cartesian_spline_)
       {
         start_cartesian_spline(current, X_goal_, cs_spline_duration_);
         start_cartesian_spline_ = false;
@@ -325,11 +328,24 @@ namespace tum_ics_ur_robot_lli
 
     void BallCatcherController::eeTargetCallback(const tum_ics_ur10_controller_tutorial::EETargetConstPtr &msg)
     {
+     ' ow::CartesianPosition X_goal_w;
+      X_goal_w = msg->ee_target;
+      X_goal_ = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
+      cs_spline_duration_ = msg->duration;
+      start_cartesian_spline_ = true;'
+      //old code
+      
       ow::CartesianPosition X_goal_w;
       X_goal_w = msg->ee_target;
       X_goal_ = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
       cs_spline_duration_ = msg->duration;
-      start_cartesian_spline_ = true;
+      if (use_cartesian_spline_){
+        start_cartesian_spline_ = true;
+      } else {
+        start_cartesian_spline_ = false;
+        ROS_DEBUG_STREAM("Setpoint update (IDLE): X_goal = " << X_goal_.transpose());
+      }
+
     }
 
     bool BallCatcherController::homingHandler(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
