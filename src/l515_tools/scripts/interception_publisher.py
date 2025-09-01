@@ -17,13 +17,13 @@ class KFtoEETargetBridge:
         self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")      
 
         self.pts = []
-        self.min_duration   = rospy.get_param("~min_duration_s", 0.1)
+        self.min_duration   = rospy.get_param("~min_duration_s", 0.05)
 
         # Camera TF params (publish a static TF here)
         self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
         self.camera_parent     = rospy.get_param("~camera_parent", "world")
         self.camera_frame      = rospy.get_param("~camera_frame", "camera_color_optical_frame")
-        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.5, 0.0, 1.0])             # meters
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.05, 0.0, 1.0])             # meters
         self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])# x y z w
 
         # -------- TF2 --------

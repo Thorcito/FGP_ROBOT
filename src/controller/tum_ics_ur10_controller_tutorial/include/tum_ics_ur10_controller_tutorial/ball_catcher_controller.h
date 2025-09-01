@@ -71,6 +71,9 @@ namespace tum_ics_ur_robot_lli
       ow::CartesianPosition X_goal_;
       double cs_spline_duration_;
 
+      //Nads variables
+      ow::CartesianVelocity held_vel_{ow::CartesianVelocity::Zero()};
+      
     public:
       BallCatcherController(double weight = 1.0, const QString &name = "BallCatcherController");
 

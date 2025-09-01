@@ -144,9 +144,6 @@ namespace tum_ics_ur_robot_lli
       // DeltaX_i.setZero();
       state_ = INITIALIZED;
       theta_ = model_.parameterInitalGuess();
-
-      bool use_cartesian_spline_ = false;
-
       return true;
     }
 
@@ -168,7 +165,7 @@ namespace tum_ics_ur_robot_lli
 
       // dt
       ros::Time t = ros::Time::now();
-      ros::Duration period = t - prev_time_;
+      ros::Duration period = prev_time_.isZero() ? ros::Duration(0.0) : (t - prev_time_);
       prev_time_ = t;
 
       if (state_ == JOINT_SPLINE)
@@ -189,10 +186,27 @@ namespace tum_ics_ur_robot_lli
 
       if (state_ == CARTESIAN_SPLINE)
       {
-        ros::Duration elapses = t - cartesian_spline_t_start_;
-        ROS_WARN_STREAM("elapses: " << elapses.toSec());
-        ow::CartesianState cs_ref = cartesian_spline_->evaluate(elapses.toSec());
-        ROS_INFO_STREAM("X_ref: " << cs_ref.pos().transpose());
+        ow::CartesianState cs_ref;
+        cs_ref.pos() = X_goal_;
+        const double tau_decay_s = 0.05;   // time constant [s]
+        const double v_stop_eps  = 1e-3;   // threshold to snap to zero [m/s & rad/s]
+
+        // Decay held_vel_ = held_vel_ * exp(-dt/tau)
+        if (held_vel_.norm() > v_stop_eps)
+        {
+          const double a = std::exp(-period.toSec() / tau_decay_s);
+          held_vel_ *= a;
+          // snap to exact zero once very small (avoids asymptotic tail)
+          if (held_vel_.norm() <= v_stop_eps)
+            held_vel_.setZero();
+        }
+        else
+        {
+          held_vel_.setZero();
+        }
+
+        cs_ref.vel() = held_vel_;
+        cs_ref.acc().setZero();
         tau_ = cartesian_space_controller(current, cs_ref, period);
       }
 
@@ -227,20 +241,37 @@ namespace tum_ics_ur_robot_lli
         state_changed = true;
       }
 
-      if ((state_ == IDLE || state_ == CARTESIAN_SPLINE) && start_cartesian_spline_ && use_cartesian_spline_)
+      if ((state_ == IDLE || state_ == CARTESIAN_SPLINE) && start_cartesian_spline_)
       {
-        start_cartesian_spline(current, X_goal_, cs_spline_duration_);
+        //start_cartesian_spline(current, X_goal_, cs_spline_duration_);
         start_cartesian_spline_ = false;
+
+        ow::Matrix6 J = model_.J_tool_0(current.q);
+        held_vel_ = ow::CartesianVelocity(J * current.qp);
+        ROS_WARN_STREAM(held_vel_);
+
         next_state = CARTESIAN_SPLINE;
-        // state_changed = true;
+        state_changed = true;
       }
 
-      if (state_ == CARTESIAN_SPLINE && (ros::Time::now() - cartesian_spline_t_start_).toSec() >= cs_spline_duration_)
+      if (state_ == CARTESIAN_SPLINE)
       {
-        i_delta_x_.setZero();
-        X_goal_ = ow::CartesianPosition(model_.T_tool_0(current.q));
-        next_state = IDLE;
-        state_changed = true;
+        ow::CartesianPosition X = ow::CartesianPosition(model_.T_tool_0(current.q));
+        ow::Matrix6 J = model_.J_tool_0(current.q);
+        ow::CartesianVelocity V = ow::CartesianVelocity(J * current.qp);
+
+
+        Vector6d dx = ow::cartesianError(X, X_goal_);
+        double pos_err = dx.head<3>().norm();
+        double ang_err = dx.tail<3>().norm(); 
+        double lin_spd = V.head<3>().norm();
+
+        if (pos_err < 0.01 && ang_err <  0.035 && lin_spd < 0.02) {
+          i_delta_x_.setZero();
+          held_vel_.setZero();
+          next_state = IDLE;       // optional; you can also just remain in CARTESIAN_SPLINE
+          state_changed = true;
+        }
       }
 
       if (state_changed)
@@ -298,7 +329,23 @@ namespace tum_ics_ur_robot_lli
 
       JointState js_r;
       js_r.qp = J_tool_0.inverse() * Xp_r;
+
+      constexpr double QDOT_MAX = 2.8;  // almost 180 deg/s in rad/s
+      for (int i = 0; i < 6; ++i) {
+        if (js_r.qp[i] >  QDOT_MAX) js_r.qp[i] =  QDOT_MAX;
+        if (js_r.qp[i] < -QDOT_MAX) js_r.qp[i] = -QDOT_MAX;
+      }
+      //ROS_WARN_STREAM_THROTTLE(1.0, js_r.qp);
+
       js_r.qpp = J_tool_0.inverse() * (Xpp_r - Jp_tool_0 * js_r.qp);
+
+      // hard-limit joint accel reference (per-joint; tune as needed)
+      constexpr double QDDOT_MAX = 6.0; // rad/s^2  (start 5–10)
+      for (int i = 0; i < 6; ++i) {
+        if (js_r.qpp[i] >  QDDOT_MAX) js_r.qpp[i] =  QDDOT_MAX;
+        if (js_r.qpp[i] < -QDDOT_MAX) js_r.qpp[i] = -QDDOT_MAX;
+}
+
 
       Vector6d Sq = current.qp - js_r.qp;
       ur::UR10Model::Regressor Yr = model_.regressor(current.q, current.qp, js_r.qp, js_r.qpp);
@@ -327,25 +374,13 @@ namespace tum_ics_ur_robot_lli
     }
 
     void BallCatcherController::eeTargetCallback(const tum_ics_ur10_controller_tutorial::EETargetConstPtr &msg)
-    {
-     ' ow::CartesianPosition X_goal_w;
-      X_goal_w = msg->ee_target;
-      X_goal_ = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
-      cs_spline_duration_ = msg->duration;
-      start_cartesian_spline_ = true;'
-      //old code
-      
+    { 
+      ROS_WARN_STREAM("New EE READ");
       ow::CartesianPosition X_goal_w;
       X_goal_w = msg->ee_target;
       X_goal_ = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
       cs_spline_duration_ = msg->duration;
-      if (use_cartesian_spline_){
-        start_cartesian_spline_ = true;
-      } else {
-        start_cartesian_spline_ = false;
-        ROS_DEBUG_STREAM("Setpoint update (IDLE): X_goal = " << X_goal_.transpose());
-      }
-
+      start_cartesian_spline_ = true;
     }
 
     bool BallCatcherController::homingHandler(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
