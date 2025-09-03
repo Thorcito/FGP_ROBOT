@@ -9,13 +9,13 @@ ball_catcher_controller:
     # Desired position
     goal: [0, -1.578, -1.578, 0, 1.578, 0]         #goal: [0, -1.578, -1.578, 0, 1.578, 0]
     # Desired duration
-    duration: 15.0
+    duration: 5.0
   
   cartesianspace:
     #proportional
-    gains_p: [50, 50, 50, 0, 0, 0]                        # [50, 50, 50, 20, 10, 5]
+    gains_p: [50, 50, 50, 1, 1, 1]                        # [50, 50, 50, 20, 10, 5]
     #derivative
-    gains_d: [120, 100, 100, 0, 0, 0]                     # [100, 75, 75, 73, 15, 5] whats up with q5
+    gains_d: [120, 100, 100, 1, 1, 1]                     # [100, 75, 75, 73, 15, 5] whats up with q5
     #integral part
     gains_i: [30, 30, 30, 10, 10, 10]
 

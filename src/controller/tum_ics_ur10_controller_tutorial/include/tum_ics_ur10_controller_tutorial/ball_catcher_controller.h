@@ -73,6 +73,10 @@ namespace tum_ics_ur_robot_lli
 
       //Nads variables
       ow::CartesianVelocity held_vel_{ow::CartesianVelocity::Zero()};
+      bool catch_active_ = false;
+      ros::Time catch_start_;
+
+
       
     public:
       BallCatcherController(double weight = 1.0, const QString &name = "BallCatcherController");
