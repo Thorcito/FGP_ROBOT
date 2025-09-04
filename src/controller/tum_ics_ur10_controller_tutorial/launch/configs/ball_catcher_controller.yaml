@@ -9,7 +9,7 @@ ball_catcher_controller:
     # Desired position
     goal: [0, -1.578, -1.578, 0, 1.578, 0]         #goal: [0, -1.578, -1.578, 0, 1.578, 0]
     # Desired duration
-    duration: 5.0
+    duration: 10.0
   
   cartesianspace:
     #proportional

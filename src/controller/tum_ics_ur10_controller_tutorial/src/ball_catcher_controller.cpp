@@ -376,7 +376,7 @@ namespace tum_ics_ur_robot_lli
 
     void BallCatcherController::start_cartesian_spline(const JointState &current, const ow::CartesianPosition &goal, double spline_duration)
     {
-      ow::CartesianPosition X_current = ow::CartesianPosition(model_.T_toosl_0(current.q));
+      ow::CartesianPosition X_current = ow::CartesianPosition(model_.T_tool_0(current.q));
 
       ROS_WARN_STREAM("New Cartesian Spline");
       ROS_WARN_STREAM("start: " << X_current.transpose());

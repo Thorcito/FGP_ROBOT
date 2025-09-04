@@ -1,3 +1,5 @@
+//Using Polinomial 5 Order controller
+
 #include <tum_ics_ur10_controller_tutorial/ball_catcher_controller.h>
 
 #include <ow_core/common/parameter.h>
@@ -165,9 +167,8 @@ namespace tum_ics_ur_robot_lli
 
       // dt
       ros::Time t = ros::Time::now();
-      ros::Duration period = prev_time_.isZero() ? ros::Duration(0.0) : (t - prev_time_);
+      ros::Duration period = t - prev_time_;
       prev_time_ = t;
-      //ROS_INFO_STREAM("Period: " << period);
 
       if (state_ == JOINT_SPLINE)
       {
@@ -187,24 +188,10 @@ namespace tum_ics_ur_robot_lli
 
       if (state_ == CARTESIAN_SPLINE)
       {
-        ow::CartesianState cs_ref;
-        cs_ref.pos() = X_goal_;
-        cs_ref.vel() = held_vel_;
-        cs_ref.acc().setZero();
-        double elapsed = (ros::Time::now() - catch_start_).toSec();
-        ROS_INFO_STREAM("Elapsed: " << elapsed << "s Ttgo: " << cs_spline_duration_ << "s");
-        ROS_INFO_STREAM("Pos: " << ow::CartesianPosition(model_.T_tool_B(current.q)).transpose());
-
-        ow::CartesianState actual;
-        actual.pos() = ow::CartesianPosition(model_.T_tool_0(current.q));
-        Vector6d pos_err = ow::cartesianError(actual.pos(), cs_ref.pos());
-        double pos_err_norm = pos_err.head<3>().norm();
-        if (pos_err_norm < 0.05){
-          ROS_WARN_STREAM("SLOWING DOWN");
-          const double a = std::exp(-period.toSec() / 0.05);
-          held_vel_ *= a;
-          cs_ref.vel() = held_vel_;
-        }
+        ros::Duration elapses = t - cartesian_spline_t_start_;
+        ROS_WARN_STREAM("elapses: " << elapses.toSec());
+        ow::CartesianState cs_ref = cartesian_spline_->evaluate(elapses.toSec());
+        ROS_INFO_STREAM("X_ref: " << cs_ref.pos().transpose());
         tau_ = cartesian_space_controller(current, cs_ref, period);
       }
 
@@ -241,48 +228,25 @@ namespace tum_ics_ur_robot_lli
 
       if ((state_ == IDLE || state_ == CARTESIAN_SPLINE) && start_cartesian_spline_)
       {
-        //start_cartesian_spline(current, X_goal_, cs_spline_duration_);
-        start_cartesian_spline_ = false;
-
-        ow::Matrix6 J = model_.J_tool_0(current.q);
-        held_vel_ = ow::CartesianVelocity(J * current.qp);
-        //ROS_WARN_STREAM(held_vel_);
-        if (state_ == IDLE){
-          catch_active_ = true;
-          catch_start_ = ros::Time::now();
+        if (!first_ball_){
+          duration_ = cs_spline_duration_;
         }
-
-
+        else{
+          duration_ = cs_spline_duration_ - (ros::Time::now()-start_t_).toSec();
+        }
+        start_cartesian_spline(current, X_goal_, duration_);
+        start_cartesian_spline_ = false;
         next_state = CARTESIAN_SPLINE;
-        state_changed = true;
+        // state_changed = true;
       }
 
-      if (state_ == CARTESIAN_SPLINE)
+      if (state_ == CARTESIAN_SPLINE && (ros::Time::now() - cartesian_spline_t_start_).toSec() >= duration_)
       {
-        ow::CartesianPosition X = ow::CartesianPosition(model_.T_tool_0(current.q));
-        ow::Matrix6 J = model_.J_tool_0(current.q);
-        ow::CartesianVelocity V = ow::CartesianVelocity(J * current.qp);
-        Vector6d dx = ow::cartesianError(X, X_goal_);
-        double pos_err = dx.head<3>().norm();
-        //ROS_INFO_STREAM_THROTTLE(0.1, "ERROR: " << pos_err);
-        double lin_spd = V.head<3>().norm();
-        //ROS_INFO_STREAM_THROTTLE(0.1, "VEL_MES: " << lin_spd);
-
-        if (pos_err < 0.03){
-          double elapsed = (ros::Time::now() - catch_start_).toSec();
-          ROS_WARN_STREAM("Total Time Elapsed: " << elapsed << "s");
-          catch_active_ = false;
-        }
-
-        if (pos_err < 0.01 && lin_spd < 0.02) {
-          ROS_WARN_STREAM("PARA IDLE");
-          ROS_WARN_STREAM("ERROR: " << pos_err);
-          ROS_WARN_STREAM("SPEED: " << lin_spd);
-          i_delta_x_.setZero();
-          held_vel_.setZero();
-          next_state = IDLE;
-          state_changed = true;
-        }
+        i_delta_x_.setZero();
+        X_goal_ = ow::CartesianPosition(model_.T_tool_0(current.q));
+        next_state = IDLE;
+        first_ball_ = false;
+        state_changed = true;
       }
 
       if (state_changed)
@@ -340,27 +304,7 @@ namespace tum_ics_ur_robot_lli
 
       JointState js_r;
       js_r.qp = J_tool_0.inverse() * Xp_r;
-
-      if (state_ == CARTESIAN_SPLINE){
-        //ROS_ERROR_STREAM("SPD: " << js_r.qp.transpose());
-      }
-      constexpr double QDOT_MAX = 2.7;  // almost 180 deg/s in rad/s
-      for (int i = 0; i < 6; ++i) {
-        if (js_r.qp[i] >  QDOT_MAX) js_r.qp[i] =  QDOT_MAX;
-        if (js_r.qp[i] < -QDOT_MAX) js_r.qp[i] = -QDOT_MAX;
-      }
-      //ROS_WARN_STREAM_THROTTLE(1.0, js_r.qp);
-
       js_r.qpp = J_tool_0.inverse() * (Xpp_r - Jp_tool_0 * js_r.qp);
-      if (state_ == CARTESIAN_SPLINE){
-        //ROS_ERROR_STREAM("ACC: " << js_r.qpp.transpose());
-      }
-      constexpr double QDDOT_MAX = 5.5; // rad/s^2 
-      for (int i = 0; i < 6; ++i) {
-        if (js_r.qpp[i] >  QDDOT_MAX) js_r.qpp[i] =  QDDOT_MAX;
-        if (js_r.qpp[i] < -QDDOT_MAX) js_r.qpp[i] = -QDDOT_MAX;
-}
-
 
       Vector6d Sq = current.qp - js_r.qp;
       ur::UR10Model::Regressor Yr = model_.regressor(current.q, current.qp, js_r.qp, js_r.qpp);
@@ -376,27 +320,42 @@ namespace tum_ics_ur_robot_lli
 
     void BallCatcherController::start_cartesian_spline(const JointState &current, const ow::CartesianPosition &goal, double spline_duration)
     {
-      ow::CartesianPosition X_current = ow::CartesianPosition(model_.T_toosl_0(current.q));
+      ow::CartesianPosition X_current = ow::CartesianPosition(model_.T_tool_0(current.q));
+      ow::Matrix6 Jacob = model_.J_tool_0(current.q);
+      ow::CartesianVelocity Xp_current = ow::CartesianVelocity(Jacob * current.qp);
+      //For spline 
+      ow::CartesianPosition Xp_actual = ow::CartesianPosition(Xp_current(0), Xp_current(1), Xp_current(2), Xp_current(3), Xp_current(4), Xp_current(5), 0.0);
+      ow::CartesianPosition Xp_goal = ow::CartesianPosition(Xp_current(0)/2, Xp_current(1)/2, Xp_current(2)/2, Xp_current(3)/2, Xp_current(4)/2, Xp_current(5)/2, 0.0);
+
+      ow::CartesianPosition zero(0,0,0,0,0,0,0);
 
       ROS_WARN_STREAM("New Cartesian Spline");
-      ROS_WARN_STREAM("start: " << X_current.transpose());
+      ROS_WARN_STREAM("start_pos: " << X_current.transpose() << " start_vel: " << Xp_current.transpose());
       ROS_WARN_STREAM("goal: " << goal.transpose());
       ROS_WARN_STREAM("duration: " << spline_duration);
 
       // create a cartesian spline
-      cartesian_spline_ = std::make_unique<ow::CartesianStateTrajectory>(ow::CartesianPolynomial(spline_duration, X_current, goal));
-      //cartesian_spline_ = std::make_unique<ow::CartesianStateTrajectory>(ow::Polynomial5Order<ow::CartesianPosition>(period, X_start, zero, zero, X_end, zero, zero));
-      cartesian_spline_t_start_ = ros::Time::now();
+      //cartesian_spline_ = std::make_unique<ow::CartesianStateTrajectory>(ow::CartesianPolynomial(spline_duration, X_current, goal));
+      cartesian_spline_ = std::make_unique<ow::CartesianStateTrajectory>(ow_core::Polynomial5Order<ow::CartesianPosition>(spline_duration, X_current, Xp_actual, zero, goal, zero, zero));
 
+      cartesian_spline_t_start_ = ros::Time::now();
     }
 
     void BallCatcherController::eeTargetCallback(const tum_ics_ur10_controller_tutorial::EETargetConstPtr &msg)
-    { 
+    {
       ow::CartesianPosition X_goal_w;
       X_goal_w = msg->ee_target;
+      if (!first_ball_){
+        cs_spline_duration_ = msg->duration;
+        Eigen::Vector4d first_orientation_;
+        frozen_goal_ = msg->ee_target;
+        start_t_ = ros::Time::now();
+        first_ball_ = true;
+      }
+      for (int i=3; i<7; ++i) {
+        X_goal_w(i) = frozen_goal_(i);
+      }
       X_goal_ = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
-      cs_spline_duration_ = msg->duration;
-      ROS_INFO_STREAM("NEW EE GOAL: " << X_goal_.transpose());
       start_cartesian_spline_ = true;
     }
 

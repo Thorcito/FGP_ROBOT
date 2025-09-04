@@ -75,6 +75,11 @@ namespace tum_ics_ur_robot_lli
       ow::CartesianVelocity held_vel_{ow::CartesianVelocity::Zero()};
       bool catch_active_ = false;
       ros::Time catch_start_;
+      bool first_ball_ = false;
+      double duration_ ;
+      ros::Time start_t_;
+      ow::CartesianPosition frozen_goal_;
+
 
 
       
