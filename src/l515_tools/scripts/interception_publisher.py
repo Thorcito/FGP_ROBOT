@@ -161,6 +161,7 @@ class KFtoEETargetBridge:
         rospy.loginfo_throttle(
             0.0,
             f"[bridge] → ee_target @{self.world_frame}: ({p_world.y:.3f},{p_world.z:.3f}), "
+            f"({q.x:.3f}, {q.y:.3f}, {q.z:.3f}, {q.w:.3f}) "
             f"dur={dur:.3f}s"
         )
 

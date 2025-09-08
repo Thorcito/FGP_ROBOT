@@ -72,13 +72,12 @@ namespace tum_ics_ur_robot_lli
       double cs_spline_duration_;
 
       //Nads variables
-      ow::CartesianVelocity held_vel_{ow::CartesianVelocity::Zero()};
-      bool catch_active_ = false;
-      ros::Time catch_start_;
-      bool first_ball_ = false;
+      ow::CartesianPosition X_start_;
+      bool start_interpolation = false;
       double duration_ ;
-      ros::Time start_t_;
-      ow::CartesianPosition frozen_goal_;
+      Vector3d p0_, p1_, dp_ ;
+      JointState last_current_;
+      Eigen::Quaterniond q0_, q1_;
 
 
 
@@ -116,6 +115,8 @@ namespace tum_ics_ur_robot_lli
       void eeTargetCallback(const tum_ics_ur10_controller_tutorial::EETargetConstPtr &msg);
 
       bool homingHandler(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res);
+
+      void startLinearInterpolation(const ow::CartesianPosition &goal, double duration, const JointState &current);
     };
 
   } // namespace RobotControllers
