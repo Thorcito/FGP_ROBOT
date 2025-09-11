@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import rospy, math
 from tum_ics_ur10_controller_tutorial.msg import EETarget
-from geometry_msgs.msg import PointStamped, TransformStamped, PoseStamped
+from geometry_msgs.msg import PointStamped, TransformStamped, PoseStamped, Vector3Stamped
 from std_msgs.msg import Float32
 from nav_msgs.msg import Path
+import numpy as np
 
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
@@ -12,6 +13,7 @@ class KFtoEETargetBridge:
     def __init__(self):
         # -------- params --------
         self.position_topic = rospy.get_param("~position_topic", "/ball_pred/hit_point")
+        self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/pred_vel_hit")
         self.ttg_topic      = rospy.get_param("~t_to_int_topic", "/ball_pred/hit_time_s")
         self.world_frame    = rospy.get_param("~world_frame", "world")   # controller's B/world
         self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")      
@@ -28,7 +30,6 @@ class KFtoEETargetBridge:
 
         self.max_step_m    = rospy.get_param("~max_step_m", 0.13)  # 10 cm gate between accepted points
 
-
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
         self.listener = tf2_ros.TransformListener(self.buf)
@@ -41,15 +42,14 @@ class KFtoEETargetBridge:
         self.pub_point = rospy.Publisher("Bridge/punto", PointStamped, queue_size=10)
         self.pub_path = rospy.Publisher("Bridge/path", Path, queue_size=10)
         rospy.Subscriber(self.position_topic, PointStamped, self.on_point, queue_size=10)
+        rospy.Subscriber(self.velocity_topic, Vector3Stamped, self.on_vhit, queue_size=10)
         rospy.Subscriber(self.ttg_topic, Float32, self.on_ttg, queue_size=10)
 
         self.last_ttg = None
         self.old_x = None
         self.old_y = None
         self.old_z = None
-
-
-
+        
         rospy.loginfo(f"[bridge] min_duration_s={self.min_duration:.2f}  ee_frame={self.ee_frame}")
 
     def _publish_static_camera_tf(self):
@@ -72,6 +72,9 @@ class KFtoEETargetBridge:
 
     def on_ttg(self, msg: Float32):
         self.last_ttg = float(msg.data)
+
+    def on_vhit(self, msg: Vector3Stamped):
+        pass
 
     def on_point(self, p_cam: PointStamped):
         # need duration to form a spline

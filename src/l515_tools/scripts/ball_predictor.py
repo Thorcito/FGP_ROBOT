@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import rospy, numpy as np
-from geometry_msgs.msg import PointStamped, PoseStamped
+from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Header, Float32
 from visualization_msgs.msg import Marker
@@ -66,14 +66,16 @@ class BallKFPredictor:
         self.updates_since_init = 0     # to handle warm-up
 
         # ---------- pubs/sub ----------
-        self.pub_filt_pt   = rospy.Publisher("/ball_pred/point_filt", PointStamped, queue_size=20)
-        self.pub_pred_pt   = rospy.Publisher("/ball_pred/pred_point", PointStamped, queue_size=20)
+        self.pub_filt_pt   = rospy.Publisher("/ball_pred/point_filt", PointStamped, queue_size=10)
+        self.pub_pred_pt   = rospy.Publisher("/ball_pred/pred_point", PointStamped, queue_size=10)
         self.pub_pred_path = rospy.Publisher("/ball_pred/pred_path", Path, queue_size=10)
         self.pub_filt_path = rospy.Publisher("/ball_pred/path_filt", Path, queue_size=10)
         self.pub_hit_point = rospy.Publisher("/ball_pred/hit_point", PointStamped, queue_size=10)
         self.pub_hit_time  = rospy.Publisher("/ball_pred/hit_time_s", Float32, queue_size=10)
         self.pub_hit_history = rospy.Publisher("/ball_pred/hit_history", Path, queue_size=10)
         self.pub_markers_static = rospy.Publisher("/ball_pred/static_plane", Marker, queue_size=1, latch=True)
+        self.pub_current_vel = rospy.Publisher("/ball_pred/current_vel", Vector3Stamped, queue_size=10)
+        self.pub_pred_vel_hit = rospy.Publisher("/ball_pred/pred_vel_hit", Vector3Stamped, queue_size=10)
 
         # diagnostics for PlotJuggler
         self.pub_innov_x = rospy.Publisher("/ball_kf/innov_x", Float32, queue_size=20)
@@ -103,7 +105,7 @@ class BallKFPredictor:
         # If it's relative, it will be created relative to the process CWD.
         csv_param = rospy.get_param("~csv_path", "~/Desktop/Robo_Project_ws/src/l515_tools/scripts/Predictions.csv")
         self.csv_path = os.path.expanduser(csv_param)   # DO NOT abspath unless you want to
-        self.csv_path = None
+        self.csv_path = None #done on purpose to dont store data
         self._csv_header_written = False
 
         # Log where we're writing and from which CWD (helps when using roslaunch)
@@ -258,6 +260,14 @@ class BallKFPredictor:
         """
         hdr = Header(stamp=stamp, frame_id=self.frame_id)
 
+        # -1)Velocity of the ball
+        vel = Vector3Stamped()
+        vel.header = hdr
+        vel.vector.x = self.x[3]
+        vel.vector.y = self.x[4]
+        vel.vector.z = self.x[5]
+        self.pub_current_vel.publish(vel)
+
         # 1) Filtered (only if accepted)
         if accepted_meas:
             pt_f = PointStamped()
@@ -332,6 +342,20 @@ class BallKFPredictor:
             path_h = Path(); path_h.header = hdr
             path_h.poses = self.hit_history
             self.pub_hit_history.publish(path_h)
+
+            
+            vel_hit = Vector3Stamped()
+            vel_hit.header = hdr
+            v0 = self.x[3:6]
+            g = self.g_cam
+            v_hit = v0 + g * t_sel
+            vel_hit.vector.x = v_hit[0]
+            vel_hit.vector.y = v_hit[1]
+            vel_hit.vector.z = v_hit[2]
+            self.pub_pred_vel_hit.publish(vel_hit)
+            rospy.logwarn_throttle(0.0, f"Velocity: (V={v_hit[0]:.4f} , {v_hit[1]:.4f}, {v_hit[2]:.4f})")
+            
+
             return t_sel, p_sel
         else:
             return None, None

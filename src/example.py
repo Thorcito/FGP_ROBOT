@@ -1,209 +1,179 @@
+"""
+Interceptor publisher that works fine, but the velocity vector is not taken into considerations
+"""
+
 #!/usr/bin/env python3
-import rospy, cv2, numpy as np
-from cv_bridge import CvBridge
-from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import PointStamped, PoseStamped
+import rospy, math
+from tum_ics_ur10_controller_tutorial.msg import EETarget
+from geometry_msgs.msg import PointStamped, TransformStamped, PoseStamped, Vector3Stamped
+from std_msgs.msg import Float32
 from nav_msgs.msg import Path
-from std_msgs.msg import Header
-from message_filters import Subscriber, ApproximateTimeSynchronizer
+import numpy as np
 
-class BallTracker:
+import tf2_ros
+from tf2_geometry_msgs import do_transform_point
+
+class KFtoEETargetBridge:
     def __init__(self):
-        self.bridge = CvBridge()
+        # -------- params --------
+        self.position_topic = rospy.get_param("~position_topic", "/ball_pred/hit_point")
+        self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/pred_vel_hit")
+        self.ttg_topic      = rospy.get_param("~t_to_int_topic", "/ball_pred/hit_time_s")
+        self.world_frame    = rospy.get_param("~world_frame", "world")   # controller's B/world
+        self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")      
 
-        # --- Topics / Params ---
-        self.rgb_topic   = rospy.get_param("~rgb_topic", "/camera/color/image_raw")
-        self.depth_topic = rospy.get_param("~depth_topic", "/camera/aligned_depth_to_color/image_raw")
-        self.cam_info_topic = rospy.get_param("~cam_info_topic", "/camera/color/camera_info")
-        self.frame_id    = rospy.get_param("~frame_id", "camera_color_optical_frame")
+        self.pts = []
+        self.min_duration   = rospy.get_param("~min_duration_s", 0.1)
 
-         # Sync tuning
-        self.slop_s      = float(rospy.get_param("~sync_slop_s", 0.015))  # 15 ms
-        self.max_dt_s    = float(rospy.get_param("~max_dt_s", 0.02))      # hard check: 20 ms
-        self.queue_size  = int(rospy.get_param("~queue_size", 10))
+        # Camera TF params (publish a static TF here)
+        self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
+        self.camera_parent     = rospy.get_param("~camera_parent", "world")
+        self.camera_frame      = rospy.get_param("~camera_frame", "camera_color_optical_frame")
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.05, 0.0, 1.0])             # meters
+        self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])# x y z w
 
+        self.max_step_m    = rospy.get_param("~max_step_m", 0.13)  # 10 cm gate between accepted points
 
-        # Depth handling
-        self.depth_scale = float(rospy.get_param("~depth_scale", 0.001))  # L515
-        self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.49))
+        # -------- TF2 --------
+        self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
+        self.listener = tf2_ros.TransformListener(self.buf)
 
-        # ==== your HSV & morphology from the tuner ====
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [106, 0, 0]), dtype=np.uint8)
-        self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [179, 255, 255]), dtype=np.uint8)
-        self.blur_ksize = int(rospy.get_param("~blur", 1))
-        self.open_it    = int(rospy.get_param("~open", 3))
-        self.close_it   = int(rospy.get_param("~close", 10))
+        if self.publish_camera_tf:
+            self._publish_static_camera_tf()
 
-        # Geometry filters
-        self.min_area_px     = int(rospy.get_param("~min_area_px", 150))
-        self.min_circularity = float(rospy.get_param("~min_circularity", 0.6))  # 4πA/P^2
+        # -------- pubs/subs --------
+        self.pub = rospy.Publisher("ee_target", EETarget, queue_size=1)
+        self.pub_point = rospy.Publisher("Bridge/punto", PointStamped, queue_size=10)
+        self.pub_path = rospy.Publisher("Bridge/path", Path, queue_size=10)
+        rospy.Subscriber(self.position_topic, PointStamped, self.on_point, queue_size=10)
+        rospy.Subscriber(self.velocity_topic, Vector3Stamped, self.on_vhit, queue_size=10)
+        rospy.Subscriber(self.ttg_topic, Float32, self.on_ttg, queue_size=10)
 
-        # Depth sampling
-        self.depth_patch = int(rospy.get_param("~depth_patch", 11))  # odd
+        self.last_ttg = None
+        self.old_x = None
+        self.old_y = None
+        self.old_z = None
+        
+        rospy.loginfo(f"[bridge] min_duration_s={self.min_duration:.2f}  ee_frame={self.ee_frame}")
 
-        # Optional smoothing (EMA) just for cleaner plots
-        self.use_ema   = bool(rospy.get_param("~use_ema", True))
-        self.pos_alpha = float(rospy.get_param("~pos_alpha", 0.25))
-        self._ema = None
+    def _publish_static_camera_tf(self):
+        t = TransformStamped()
+        t.header.stamp = rospy.Time.now()
+        t.header.frame_id = self.camera_parent
+        t.child_frame_id  = self.camera_frame
+        t.transform.translation.x = float(self.cam_xyz[0])
+        t.transform.translation.y = float(self.cam_xyz[1])
+        t.transform.translation.z = float(self.cam_xyz[2])
+        qx, qy, qz, qw = self.cam_quat_xyzw
+        t.transform.rotation.x = float(qx)
+        t.transform.rotation.y = float(qy)
+        t.transform.rotation.z = float(qz)
+        t.transform.rotation.w = float(qw)
+        self.static_broadcaster = tf2_ros.StaticTransformBroadcaster()
+        self.static_broadcaster.sendTransform(t)
+        rospy.loginfo(f"[bridge] Published static TF {self.camera_parent} -> {self.camera_frame} "
+                      f"xyz={self.cam_xyz} quat={self.cam_quat_xyzw}")
 
-        # Path settings (for RViz 3D trail)
-        self.path_publish = bool(rospy.get_param("~publish_path", True))
-        self.path_maxlen  = int(rospy.get_param("~path_maxlen", 100))
-        self._poses = []  # rolling buffer
+    def on_ttg(self, msg: Float32):
+        self.last_ttg = float(msg.data)
 
-        # Camera intrinsics
-        self.fx = self.fy = self.cx = self.cy = None
+    def on_vhit(self, msg: Vector3Stamped):
+        pass
 
-        # Publishers for PlotJuggler & RViz
-        self.pub_point   = rospy.Publisher("/ball/point", PointStamped, queue_size=10)
-        self.pub_pose    = rospy.Publisher("/ball/pose", PoseStamped, queue_size=10)
-        self.pub_path    = rospy.Publisher("/ball/path", Path, queue_size=10) if self.path_publish else None
-        self.pub_debug   = rospy.Publisher("/ball/debug_image", Image, queue_size=1)
-        self.pub_mask    = rospy.Publisher("/ball/debug_mask", Image, queue_size=1)
-
-        # Subscribers
-        rospy.Subscriber(self.cam_info_topic, CameraInfo, self.caminfo_cb, queue_size=1)
-        self.sub_rgb   = Subscriber(self.rgb_topic, Image)
-        self.sub_depth = Subscriber(self.depth_topic, Image)
-        self.sync = ApproximateTimeSynchronizer(
-            [self.sub_rgb, self.sub_depth],
-            queue_size=self.queue_size, slop=self.slop_s, allow_headerless=False
-        )
-        self.sync.registerCallback(self.sync_cb)
-
-        rospy.loginfo("BallTrackerSync: ATS slop=%.3f s, max_dt=%.3f s, queue=%d",
-                      self.slop_s, self.max_dt_s, self.queue_size)
-
-    # ---- Callbacks ----
-    def caminfo_cb(self, msg: CameraInfo):
-        self.fx, self.fy, self.cx, self.cy = msg.K[0], msg.K[4], msg.K[2], msg.K[5]
-        if msg.header.frame_id:
-            self.frame_id = msg.header.frame_id
-
-    def rgb_cb(self, msg: Image):
-        self.last_stamp = msg.header.stamp
-        self.last_rgb = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.try_process()
-
-    def depth_cb(self, msg: Image):
-        self.last_depth = self.bridge.imgmsg_to_cv2(msg, "passthrough")
-        self.try_process()
-
-    def try_process(self):
-        if self.last_rgb is None or self.last_depth is None or self.fx is None:
+    def on_point(self, p_cam: PointStamped):
+        # need duration to form a spline
+        if self.last_ttg is None:
             return
 
-        rgb = self.last_rgb
-        depth_u16 = self.last_depth
-        H, W = depth_u16.shape[:2]
-
-        # 1) HSV mask
-        hsv = cv2.cvtColor(rgb, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
-        if self.blur_ksize > 1:
-            k = self.blur_ksize | 1
-            mask = cv2.GaussianBlur(mask, (k, k), 0)
-        if self.open_it > 0:
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=self.open_it)
-        if self.close_it > 0:
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8), iterations=self.close_it)
-
-        # 2) Contours + circularity
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best = None
-        for c in cnts:
-            area = cv2.contourArea(c)
-            if area < self.min_area_px:
-                continue
-            peri = cv2.arcLength(c, True)
-            if peri <= 0:
-                continue
-            circularity = 4.0*np.pi*area/(peri*peri)
-            if circularity < self.min_circularity:
-                continue
-            (x, y), r = cv2.minEnclosingCircle(c)
-            score = circularity * area
-            if best is None or score > best[0]:
-                best = (score, int(x), int(y), float(r), c)
-
-        debug = rgb.copy()
-        if best is None:
-            self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
-            self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
+        dur = float(self.last_ttg)
+        if dur < self.min_duration:
+            rospy.loginfo_throttle(0.0, f"[bridge] Tgo={dur:.3f}s < min {self.min_duration:.2f}s → skip")
             return
 
-        _, u, v, r, contour = best
-        cv2.circle(debug, (u, v), int(r), (0,255,0), 2)
-        cv2.circle(debug, (u, v), 3, (0,0,255), -1)
+        cam_frame = p_cam.header.frame_id or self.camera_frame
 
-        # 3) Depth median around center
-        half = self.depth_patch // 2
-        x0 = max(0, u - half); x1 = min(W, u + half + 1)
-        y0 = max(0, v - half); y1 = min(H, v + half + 1)
-        patch = depth_u16[y0:y1, x0:x1].astype(np.float32) * self.depth_scale
-        valid = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z)
-        if np.count_nonzero(valid) == 0:
-            self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
-            self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
+        # --- Transform camera -> world ---
+        try:
+            Tcw = self.buf.lookup_transform(self.world_frame, cam_frame,
+                                            rospy.Time(0), rospy.Duration(0.05))
+            p_world_geo = do_transform_point(p_cam, Tcw)
+            p_world = p_world_geo.point
+        except Exception as e:
+            rospy.logwarn_throttle(0.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
             return
-        Z = float(np.median(patch[valid]))
 
-        # 4) Back-project to 3D
-        X = (u - self.cx) * Z / self.fx
-        Y = (v - self.cy) * Z / self.fy
+        # --- Gate by catching area---
+        if not (-0.14 <= p_world.y <= 0.46 and 0.52 <= p_world.z <= 1.12):
+            rospy.logerr_throttle(0.0, f"[bridge] outside catching area; Tgo={dur:.3f}")
+            self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
+            return
 
-        # Optional EMA smoothing for plotting
-        if self.use_ema:
-            p = np.array([X, Y, Z], dtype=np.float32)
-            self._ema = p if self._ema is None else (1.0 - self.pos_alpha)*self._ema + self.pos_alpha*p
-            X, Y, Z = map(float, self._ema)
+        # --- Distance gate to avoid big jumps between measurements ---
+        if self.old_x is not None:
+            dx = p_world.x - self.old_x
+            dy = p_world.y - self.old_y
+            dz = p_world.z - self.old_z
+            step = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if step > self.max_step_m:
+                rospy.logwarn_throttle(0.0, f"[bridge] step {step:.3f} m > max {self.max_step_m:.3f} m → reject")
+                self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
+                return
+        # else: first point, no gating
 
-        # 5) Publish PlotJuggler-friendly topics
-        stamp = self.last_stamp
+        # --- Get current EE orientation for the message ---
+        try:
+            T_w_ee = self.buf.lookup_transform(self.world_frame, self.ee_frame,
+                                            rospy.Time(0), rospy.Duration(0.02))
+            q = T_w_ee.transform.rotation
+        except Exception as e:
+            rospy.logwarn_throttle(1.0, f"[bridge] EE TF lookup failed ({self.ee_frame}→{self.world_frame}): {e}")
+            return
 
-        pt = PointStamped()
-        pt.header = Header(stamp=stamp, frame_id=self.frame_id)
-        pt.point.x, pt.point.y, pt.point.z = X, Y, Z
-        self.pub_point.publish(pt)
+        # --- Publish accepted point + path (only accepted points make the path) ---
+        stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
 
-        self.pub_x.publish(Float32(data=X))
-        self.pub_y.publish(Float32(data=Y))
-        self.pub_z.publish(Float32(data=Z))
+        pto_w = PointStamped()
+        pto_w.header.stamp = stamp
+        pto_w.header.frame_id = self.world_frame
+        pto_w.point.x, pto_w.point.y, pto_w.point.z = p_world.x, p_world.y, p_world.z
+        self.pub_point.publish(pto_w)
 
         pose = PoseStamped()
-        pose.header = pt.header
-        pose.pose.position.x = X
-        pose.pose.position.y = Y
-        pose.pose.position.z = Z
-        pose.pose.orientation.w = 1.0  # no orientation; just for Path/RViz
-        self.pub_pose.publish(pose)
+        pose.header.stamp = stamp
+        pose.header.frame_id = self.world_frame
+        pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = p_world.x, p_world.y, p_world.z
+        pose.pose.orientation.w = 1.0
+        self.pts.append(pose)
+        if len(self.pts) > 20:
+            self.pts = self.pts[-20:]
+        path_msg = Path()
+        path_msg.header.stamp = stamp
+        path_msg.header.frame_id = self.world_frame
+        path_msg.poses = list(self.pts)
+        self.pub_path.publish(path_msg)
 
-        if self.path_publish and self.pub_path:
-            self._poses.append(pose)
-            if len(self._poses) > self.path_maxlen:
-                self._poses = self._poses[-self.path_maxlen:]
-            path_msg = Path()
-            path_msg.header = pose.header
-            path_msg.poses = self._poses
-            self.pub_path.publish(path_msg)
+        # --- Build and publish EETarget ---
+        msg = EETarget()
+        msg.ee_target.position.x = p_world.x
+        msg.ee_target.position.y = p_world.y
+        msg.ee_target.position.z = p_world.z
+        msg.ee_target.orientation.x = q.x
+        msg.ee_target.orientation.y = q.y
+        msg.ee_target.orientation.z = q.z
+        msg.ee_target.orientation.w = q.w
+        msg.duration = dur
+        self.pub.publish(msg)
+        self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
 
-        # RViz sphere for quick sanity
-        m = Marker()
-        m.header = pt.header
-        m.ns = "ball"; m.id = 0
-        m.type = Marker.SPHERE; m.action = Marker.ADD
-        m.pose.position.x, m.pose.position.y, m.pose.position.z = X, Y, Z
-        m.scale.x = m.scale.y = m.scale.z = 0.10  # visualize real diameter
-        m.color.a = 0.85; m.color.r = 0.8; m.color.g = 0.2; m.color.b = 0.8
-        self.pub_marker.publish(m)
+        rospy.loginfo_throttle(
+            0.0,
+            f"[bridge] → ee_target @{self.world_frame}: ({p_world.y:.3f},{p_world.z:.3f}), "
+            f"({q.x:.3f}, {q.y:.3f}, {q.z:.3f}, {q.w:.3f}) "
+            f"dur={dur:.3f}s"
+        )
 
-        # Debug outputs
-        cv2.putText(debug, f"u,v=({u},{v})  XYZ=({X:.3f},{Y:.3f},{Z:.3f})m",
-                    (u+8, max(20, v-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,220,220), 2, cv2.LINE_AA)
-        self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
-        self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
 
 if __name__ == "__main__":
-    rospy.init_node("ball_tracker")
-    BallTracker()
+    rospy.init_node("kf_to_ee_target_bridge")
+    KFtoEETargetBridge()
     rospy.spin()

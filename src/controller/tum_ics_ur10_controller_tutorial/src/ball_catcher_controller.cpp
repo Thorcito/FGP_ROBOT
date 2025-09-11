@@ -162,14 +162,18 @@ namespace tum_ics_ur_robot_lli
       p1_ = goal.head<3>();      // goal position (already in base frame)
       dp_ = p1_ - p0_;
       const Eigen::Matrix3d R0 = T0.rotation();
-      q0_ = Eigen::Quaterniond(T0.linear()).normalized(); 
-      const Eigen::Vector3d phi_goal = goal.tail<3>();
-      Eigen::Matrix3d Rg = Eigen::Matrix3d::Identity();
-      const double theta = phi_goal.norm();
-      if (theta > 1e-12) {
-        Rg = Eigen::AngleAxisd(theta, phi_goal.normalized()).toRotationMatrix();
+      q0_ = Eigen::Quaterniond(T0.linear()).normalized();
+      ROS_WARN_STREAM("q0_ = " << "w: " << q0_.w() << ", x: " << q0_.x() << ", y: " << q0_.y() << ", z: " << q0_.z());
+      // goal layout is [px, py, pz, qx, qy, qz, qw]
+      const double qx = goal(3);
+      const double qy = goal(4);
+      const double qz = goal(5);
+      const double qw = goal(6);
+      q1_ = Eigen::Quaterniond(qw, qx, qy, qz).normalized();  // w,x,y,z
+      if (q0_.dot(q1_) < 0.0) {
+        q1_.coeffs() *= -1.0;   // flip sign of q1_ to avoid the π jump
       }
-      q1_ = Eigen::Quaterniond(Rg).normalized();
+      ROS_ERROR_STREAM("q1_ = " << "w: " << q1_.w() << ", x: " << q1_.x() << ", y: " << q1_.y() << ", z: " << q1_.z());
       cs_spline_duration_ = std::max(1e-6, duration);
       duration_ = 0.0;
       start_interpolation = true;
@@ -231,7 +235,9 @@ namespace tum_ics_ur_robot_lli
         Eigen::Quaterniond q_rel = q0_.conjugate() * q1_;
         q_rel.normalize();
         Eigen::AngleAxisd aa(q_rel);
-        const Eigen::Vector3d phi = aa.axis() * aa.angle();     // rotation vector from start to goal
+        //ROS_WARN_STREAM("Angle= " << aa.angle() << " rad");
+        const Eigen::Vector3d phi = aa.axis() * aa.angle();     // rotation vector (how much radians around each axis)
+        //ROS_WARN_STREAM("Rot Vector= " << phi);
         const Eigen::Vector3d w_ref = sdot * phi;               // approx spatial ω
 
         // -- Build reference pose and twist --
