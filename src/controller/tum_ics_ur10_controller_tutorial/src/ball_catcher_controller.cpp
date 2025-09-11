@@ -163,7 +163,7 @@ namespace tum_ics_ur_robot_lli
       dp_ = p1_ - p0_;
       const Eigen::Matrix3d R0 = T0.rotation();
       q0_ = Eigen::Quaterniond(T0.linear()).normalized();
-      ROS_WARN_STREAM("q0_ = " << "w: " << q0_.w() << ", x: " << q0_.x() << ", y: " << q0_.y() << ", z: " << q0_.z());
+      //ROS_WARN_STREAM("q0_ = " << "w: " << q0_.w() << ", x: " << q0_.x() << ", y: " << q0_.y() << ", z: " << q0_.z());
       // goal layout is [px, py, pz, qx, qy, qz, qw]
       const double qx = goal(3);
       const double qy = goal(4);
@@ -173,7 +173,7 @@ namespace tum_ics_ur_robot_lli
       if (q0_.dot(q1_) < 0.0) {
         q1_.coeffs() *= -1.0;   // flip sign of q1_ to avoid the π jump
       }
-      ROS_ERROR_STREAM("q1_ = " << "w: " << q1_.w() << ", x: " << q1_.x() << ", y: " << q1_.y() << ", z: " << q1_.z());
+      //ROS_ERROR_STREAM("q1_ = " << "w: " << q1_.w() << ", x: " << q1_.x() << ", y: " << q1_.y() << ", z: " << q1_.z());
       cs_spline_duration_ = std::max(1e-6, duration);
       duration_ = 0.0;
       start_interpolation = true;
@@ -313,10 +313,13 @@ namespace tum_ics_ur_robot_lli
         ROS_INFO_STREAM_THROTTLE(0.1, "ERROR: " << pos_err);
         double lin_spd = V.head<3>().norm();
         ROS_INFO_STREAM_THROTTLE(0.1, "VEL_MES: " << lin_spd);
-        if (pos_err < 0.01 && lin_spd < 0.1) {
+        double ang_err = dx.tail<3>().norm();   // radians of orientation error
+        ROS_INFO_STREAM_THROTTLE(0.1, "ANGLE: " << ang_err);
+        if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.1) {
           ROS_WARN_STREAM("PARA IDLE");
           ROS_WARN_STREAM("ERROR: " << pos_err);
           ROS_WARN_STREAM("SPEED: " << lin_spd);
+          ROS_WARN_STREAM("ANGLE: " << ang_err);
           i_delta_x_.setZero();
           next_state = IDLE;
           start_interpolation = false;
