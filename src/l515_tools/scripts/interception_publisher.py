@@ -9,47 +9,56 @@ import numpy as np
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_geometry_msgs import do_transform_point
-from tf.transformations import quaternion_from_matrix
+from tf.transformations import quaternion_slerp
+
 
 class KFtoEETargetBridge:
     def __init__(self):
         # -------- params --------
         self.position_topic = rospy.get_param("~position_topic", "/ball_pred/hit_point")
-        self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/pred_vel_hit")
+        self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/current_vel")
         self.ttg_topic      = rospy.get_param("~t_to_int_topic", "/ball_pred/hit_time_s")
-        self.world_frame    = rospy.get_param("~world_frame", "world")   # controller's B/world
-        self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")      
 
-        self.pts = []
+        self.world_frame    = rospy.get_param("~world_frame", "world")
+        self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")
+
         self.min_duration   = rospy.get_param("~min_duration_s", 0.1)
+        self.max_step_m     = rospy.get_param("~max_step_m", 0.13)
 
-        # Camera TF params (publish a static TF here)
+        # Camera TF (optional)
         self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
         self.camera_parent     = rospy.get_param("~camera_parent", "world")
         self.camera_frame      = rospy.get_param("~camera_frame", "camera_color_optical_frame")
-        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.05, 0.0, 1.0])             # meters
-        self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])# x y z w
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.05, 0.0, 1.0])
+        self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])  # x y z w
 
-        self.max_step_m    = rospy.get_param("~max_step_m", 0.13)  # 10 cm gate between accepted points
+        # Orientation tracking (continuous)
+        self.vel_min_speed = float(rospy.get_param("~vel_min_speed_mps", 1.0))
+        self.up_world = np.array(rospy.get_param("~up_world", [0.0, 0.0, 1.0]), dtype=np.float64)
+        self.dir_sign = 1.0  # fixed: face the ball (your validated setting)
+        self.dir_alpha = float(rospy.get_param("~dir_alpha", 0.25))  # EMA on direction
 
-        #ORIENTATION 
-        # --- params ---
-        self.vel_angle_deg_thresh = float(rospy.get_param("~vel_angle_deg_thresh", 8.0))
-        self.vel_min_speed = float(rospy.get_param("~vel_min_speed_mps", 0.4))
-        self.vel_stable_count_needed = int(rospy.get_param("~vel_stable_count", 3))
-        self.align_axis = rospy.get_param("~align_axis", "-z")  # options: +x,-x,+y,-y,+z,-z
+        self.track_deadband_deg = float(rospy.get_param("~track_deadband_deg", 2.0))
+        self.track_omega_max_rad = float(rospy.get_param("~track_omega_max_rad", 4.0))
+        self.track_dt_cap_s = float(rospy.get_param("~track_dt_cap_s", 0.12))
 
-        # --- state ---
-        self.v_world_prev = None
-        self.v_world_stable_count = 0
-        self.orientation_locked = False    # becomes True after we switch to velocity orientation
-        self.catch_quat_world = None       # quaternion we’ll publish once locked
+        # Resets to avoid stale state between throws
+        self.reset_on_outside = bool(rospy.get_param("~reset_on_outside", True))
+        self.reset_on_big_step = bool(rospy.get_param("~reset_on_big_step", True))
 
+        # -------- state --------
+        self.catch_quat_world = None   # XYZW command quat (what we send)
+        self.pos_ema = None            # filtered direction
+        self.last_track_stamp = None
+
+        self.last_ttg = None
+        self.old_x = self.old_y = self.old_z = None
+        self.get_orientation = False   # start tracking only after first accepted point
+        self.pts = []
 
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
         self.listener = tf2_ros.TransformListener(self.buf)
-
         if self.publish_camera_tf:
             self._publish_static_camera_tf()
 
@@ -61,13 +70,9 @@ class KFtoEETargetBridge:
         rospy.Subscriber(self.velocity_topic, Vector3Stamped, self.on_vhit, queue_size=10)
         rospy.Subscriber(self.ttg_topic, Float32, self.on_ttg, queue_size=10)
 
-        self.last_ttg = None
-        self.old_x = None
-        self.old_y = None
-        self.old_z = None
-        
-        rospy.loginfo(f"[bridge] min_duration_s={self.min_duration:.2f}  ee_frame={self.ee_frame}")
+        rospy.loginfo(f"[bridge] ready  frame={self.world_frame}  ee={self.ee_frame}  min_dur={self.min_duration:.2f}s")
 
+    # ---------- helpers ----------
     def _publish_static_camera_tf(self):
         t = TransformStamped()
         t.header.stamp = rospy.Time.now()
@@ -83,59 +88,126 @@ class KFtoEETargetBridge:
         t.transform.rotation.w = float(qw)
         self.static_broadcaster = tf2_ros.StaticTransformBroadcaster()
         self.static_broadcaster.sendTransform(t)
-        rospy.loginfo(f"[bridge] Published static TF {self.camera_parent} -> {self.camera_frame} "
-                      f"xyz={self.cam_xyz} quat={self.cam_quat_xyzw}")
-        
+
     def _rotate_vec_by_tf(self, v_cam, world_frame, cam_frame):
-        # get rotation only
         Tcw = self.buf.lookup_transform(world_frame, cam_frame, rospy.Time(0), rospy.Duration(0.05))
         q = Tcw.transform.rotation
-        # rotate v_cam by q (world←camera)
-        # Convert to numpy
         qc = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
-        # v' = q * v * q_conj
-        # expand manually:
         x, y, z = v_cam
         qw, qx, qy, qz = qc
-        # q*v as pure quaternion
-        # Efficient vector rotation:
         t = 2.0 * np.cross([qx, qy, qz], [x, y, z])
         v_world = [x, y, z] + qw * t + np.cross([qx, qy, qz], t)
         return np.array(v_world, dtype=np.float64)
-    
-    def _quat_align_axis_to_vector(self, axis_str, v_target_world):
-        # axis_str in {+x,-x,+y,-y,+z,-z}; returns wxyz quaternion
-        A = {
-            "+x": np.array([1,0,0.],float), "-x": np.array([-1,0,0.],float),
-            "+y": np.array([0,1,0.],float), "-y": np.array([0,-1,0.],float),
-            "+z": np.array([0,0,1.],float), "-z": np.array([0,0,-1.],float),
-        }[axis_str.lower()]
-        b = v_target_world / (np.linalg.norm(v_target_world) + 1e-12)
-        a = A / (np.linalg.norm(A) + 1e-12)
 
-        # Handle near-parallel and anti-parallel robustly
-        dot = float(np.clip(np.dot(a, b), -1.0, 1.0))
-        if dot > 1.0 - 1e-9:
-            # already aligned
-            return np.array([1.0, 0.0, 0.0, 0.0], float)  # identity (wxyz)
-        if dot < -1.0 + 1e-9:
-            # 180°: choose any orthogonal axis
-            ortho = np.array([1,0,0.],float) if abs(a[0]) < 0.9 else np.array([0,1,0.],float)
-            rot_axis = np.cross(a, ortho); rot_axis /= (np.linalg.norm(rot_axis)+1e-12)
-            return np.array([0.0, rot_axis[0], rot_axis[1], rot_axis[2]], float)  # 180° (w=0)
-        # general case
-        rot_axis = np.cross(a, b); s = np.linalg.norm(rot_axis)
-        rot_axis /= (s + 1e-12)
-        angle = math.acos(dot)
-        half = 0.5*angle
-        return np.array([math.cos(half), *(rot_axis*math.sin(half))], float)
+    def _unit(self, v):
+        n = float(np.linalg.norm(v))
+        return v / (n + 1e-12)
 
+    def _R_from_quat_xyzw(self, q):
+        x, y, z, w = q
+        xx, yy, zz = x*x, y*y, z*z
+        xy, xz, yz = x*y, x*z, y*z
+        wx, wy, wz = w*x, w*y, w*z
+        return np.array([
+            [1-2*(yy+zz), 2*(xy-wz),   2*(xz+wy)],
+            [2*(xy+wz),   1-2*(xx+zz), 2*(yz-wx)],
+            [2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)]
+        ], dtype=np.float64)
+
+    def _quat_from_R(self, R):
+        tr = np.trace(R)
+        if tr > 0:
+            S = math.sqrt(tr + 1.0) * 2.0
+            qw = 0.25 * S
+            qx = (R[2,1] - R[1,2]) / S
+            qy = (R[0,2] - R[2,0]) / S
+            qz = (R[1,0] - R[0,1]) / S
+        else:
+            i = np.argmax([R[0,0], R[1,1], R[2,2]])
+            if i == 0:
+                S = math.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2.0
+                qw = (R[2,1] - R[1,2]) / S; qx = 0.25 * S; qy = (R[0,1] + R[1,0]) / S; qz = (R[0,2] + R[2,0]) / S
+            elif i == 1:
+                S = math.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2.0
+                qw = (R[0,2] - R[2,0]) / S; qx = (R[0,1] + R[1,0]) / S; qy = 0.25 * S; qz = (R[1,2] + R[2,1]) / S
+            else:
+                S = math.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2.0
+                qw = (R[1,0] - R[0,1]) / S; qx = (R[0,2] + R[2,0]) / S; qy = (R[1,2] + R[2,1]) / S; qz = 0.25 * S
+        q = np.array([qx, qy, qz, qw], dtype=np.float64)
+        q /= (np.linalg.norm(q) + 1e-12)
+        return q
+
+    def _rot_about_axis_matrix(self, k, phi):
+        k = self._unit(k)
+        K = np.array([[0,-k[2],k[1]],[k[2],0,-k[0]],[-k[1],k[0],0]], dtype=np.float64)
+        I = np.eye(3)
+        return I*math.cos(phi) + math.sin(phi)*K + (1-math.cos(phi))*np.outer(k,k)
+
+    # Fixed-axis (+Z) frame builder with roll stabilization vs up_world
+    def _frame_from_dir_with_up_z(self, dir_world, up_world):
+        z = self._unit(dir_world)
+        up = self._unit(up_world)
+        if abs(np.dot(z, up)) > 0.98:
+            up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        x = self._unit(np.cross(up, z))  # lateral
+        y = np.cross(z, x)
+        R = np.column_stack([x, y, z])   # columns are world axes of tool
+        return R  # axis_idx for +Z is 2
+
+    # Choose roll that minimizes rotation from current orientation; also try 180° roll
+    def _candidate_for_z(self, dir_world, up_world, q_now_xyzw):
+        R_now = self._R_from_quat_xyzw(q_now_xyzw)
+        R_base = self._frame_from_dir_with_up_z(dir_world, up_world)
+
+        # minimize roll about Z
+        z = R_base[:, 2]
+        x_now = R_now[:, 0]
+        def proj_plane(v): return self._unit(v - z * np.dot(z, v))
+        x_p = proj_plane(x_now)
+        x0  = R_base[:, 0]
+        s = np.dot(z, np.cross(x0, x_p))
+        c = np.dot(x0, x_p)
+        phi = math.atan2(s, c)
+        R_opt = self._rot_about_axis_matrix(z, phi) @ R_base
+
+        # also consider 180° roll (flip x,y)
+        R_flip = R_base.copy()
+        R_flip[:, 0] *= -1.0
+        R_flip[:, 1] *= -1.0
+        x0f = R_flip[:, 0]
+        s2 = np.dot(z, np.cross(x0f, x_p))
+        c2 = np.dot(x0f, x_p)
+        phi2 = math.atan2(s2, c2)
+        R_opt2 = self._rot_about_axis_matrix(z, phi2) @ R_flip
+
+        q_now = self._quat_from_R(R_now)
+        q1 = self._quat_from_R(R_opt)
+        q2 = self._quat_from_R(R_opt2)
+
+        def quat_angle(qA, qB):
+            dot = float(np.dot(qA, qB))
+            dot = abs(max(min(dot, 1.0), -1.0))
+            return 2.0 * math.acos(dot)
+
+        return (q1, quat_angle(q_now, q1)) if quat_angle(q_now, q1) <= quat_angle(q_now, q2) else (q2, quat_angle(q_now, q2))
+
+    def _quat_xyzw_to_wxyz(self, q): return np.array([q[3], q[0], q[1], q[2]], float)
+    def _quat_wxyz_to_xyzw(self, q): return np.array([q[1], q[2], q[3], q[0]], float)
+
+    def _reset_orientation_filter(self, why=""):
+        self.catch_quat_world = None
+        self.pos_ema = None
+        self.last_track_stamp = None
+        if why:
+            rospy.loginfo(f"[bridge] reset orientation ({why})")
+
+    # ---------- callbacks ----------
     def on_ttg(self, msg: Float32):
         self.last_ttg = float(msg.data)
 
     def on_vhit(self, msg: Vector3Stamped):
-        if self.orientation_locked:
-            return  # we already decided the catch orientation
+        if not self.get_orientation:
+            return
 
         cam_frame = msg.header.frame_id or self.camera_frame
         try:
@@ -145,41 +217,42 @@ class KFtoEETargetBridge:
             rospy.logwarn_throttle(0.5, f"[bridge] vhit TF rot failed: {e}")
             return
 
-        speed = float(np.linalg.norm(v_world))
-        if speed < self.vel_min_speed:
-            self.v_world_prev = v_world
-            self.v_world_stable_count = 0
+        if np.linalg.norm(v_world) < self.vel_min_speed:
             return
 
-        if self.v_world_prev is None:
-            self.v_world_prev = v_world
-            self.v_world_stable_count = 1
-            return
+        # EMA direction (fixed sign = -1 → face ball)
+        p_raw = self._unit(self.dir_sign * v_world)
+        if self.pos_ema is None:
+            self.pos_ema = p_raw
+        self.pos_ema = self._unit((1.0 - self.dir_alpha) * self.pos_ema + self.dir_alpha * p_raw)
 
-        # stability check
-        dot = float(np.dot(v_world, self.v_world_prev) / (np.linalg.norm(v_world)*np.linalg.norm(self.v_world_prev)+1e-12))
-        dot = max(-1.0, min(1.0, dot))
-        thresh_dot = math.cos(math.radians(self.vel_angle_deg_thresh))
-        rospy.logwarn_throttle(0.0, f"[bridge] AngleRef: ({thresh_dot}→ AngleMes: {dot})")
-        if dot >= thresh_dot:
-            self.v_world_stable_count += 1
-        else:
-            self.v_world_stable_count = 0
+        # Initialize command quat from current EE if first time
+        if self.catch_quat_world is None:
+            try:
+                T_w_ee = self.buf.lookup_transform(self.world_frame, self.ee_frame,
+                                                   rospy.Time(0), rospy.Duration(0.02))
+                q = T_w_ee.transform.rotation
+                self.catch_quat_world = np.array([q.x, q.y, q.z, q.w], dtype=np.float64)
+                self.catch_quat_world /= (np.linalg.norm(self.catch_quat_world) + 1e-12)
+            except Exception as e:
+                rospy.logwarn_throttle(0.5, f"[bridge] EE TF lookup (init) failed: {e}")
+                return
 
-        self.v_world_prev = v_world
+        # Rate-limited slerp toward +Z aligned with current filtered direction
+        now = msg.header.stamp if msg.header.stamp.to_sec() > 0 else rospy.Time.now()
+        dt_raw = 0.02 if self.last_track_stamp is None else max(1e-3, (now - self.last_track_stamp).to_sec())
+        self.last_track_stamp = now
+        dt = min(dt_raw, self.track_dt_cap_s)
 
-        if self.v_world_stable_count >= self.vel_stable_count_needed:
-            # lock orientation once
-            q_wxyz = self._quat_align_axis_to_vector(self.align_axis, v_world)
-            # store as geometry-msg-style (x,y,z,w) for publishing
-            self.catch_quat_world = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]], float)
-            self.orientation_locked = True
-            rospy.loginfo(f"[bridge] catch orientation locked from velocity (axis {self.align_axis}, "
-                        f"angle_thresh={self.vel_angle_deg_thresh}°, N={self.vel_stable_count_needed})")
-
+        q_tgt, theta = self._candidate_for_z(self.pos_ema, self.up_world, self.catch_quat_world)
+        theta_deg = math.degrees(theta)
+        if theta_deg > self.track_deadband_deg:
+            step = min(1.0, (self.track_omega_max_rad * dt) / max(theta, 1e-6))
+            q_cmd_wxyz = quaternion_slerp(self._quat_xyzw_to_wxyz(self.catch_quat_world),
+                                          self._quat_xyzw_to_wxyz(q_tgt), step)
+            self.catch_quat_world = self._quat_wxyz_to_xyzw(q_cmd_wxyz)
 
     def on_point(self, p_cam: PointStamped):
-        # need duration to form a spline
         if self.last_ttg is None:
             return
 
@@ -190,7 +263,7 @@ class KFtoEETargetBridge:
 
         cam_frame = p_cam.header.frame_id or self.camera_frame
 
-        # --- Transform camera -> world ---
+        # Transform camera → world
         try:
             Tcw = self.buf.lookup_transform(self.world_frame, cam_frame,
                                             rospy.Time(0), rospy.Duration(0.05))
@@ -200,50 +273,42 @@ class KFtoEETargetBridge:
             rospy.logwarn_throttle(0.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
             return
 
-        # --- Gate by catching area---
+        # Catching area gate
         if not (-0.14 <= p_world.y <= 0.46 and 0.52 <= p_world.z <= 1.12):
             rospy.logerr_throttle(0.0, f"[bridge] outside catching area; Tgo={dur:.3f}")
             self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
-            self.orientation_locked = False
-            self.catch_quat_world = None
-            self.v_world_prev = None
-            self.v_world_stable_count = 0
+            self.get_orientation = False
+            if self.reset_on_outside:
+                self._reset_orientation_filter("outside area")
             return
 
-        # --- Distance gate to avoid big jumps between measurements ---
+        # Distance gate
         if self.old_x is not None:
             dx = p_world.x - self.old_x
             dy = p_world.y - self.old_y
             dz = p_world.z - self.old_z
             step = math.sqrt(dx*dx + dy*dy + dz*dz)
             if step > self.max_step_m:
-                rospy.logwarn_throttle(0.0, f"[bridge] step {step:.3f} m > max {self.max_step_m:.3f} m → reject")
+                rospy.logerr_throttle(0.0, f"[bridge] step {step:.3f} m > max {self.max_step_m:.3f} m → reject")
                 self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
-                self.orientation_locked = False
-                self.catch_quat_world = None
-                self.v_world_prev = None
-                self.v_world_stable_count = 0
+                if self.reset_on_big_step:
+                    self._reset_orientation_filter(f"big step {step:.3f} m")
                 return
-        # else: first point, no gating
 
-        # --- Get current EE orientation for the message ---
+        # Current EE orientation (for logging / pass-through if needed)
         try:
             T_w_ee = self.buf.lookup_transform(self.world_frame, self.ee_frame,
-                                            rospy.Time(0), rospy.Duration(0.02))
-            q = T_w_ee.transform.rotation
+                                               rospy.Time(0), rospy.Duration(0.02))
+            qee = T_w_ee.transform.rotation
+            q_ee = np.array([qee.x, qee.y, qee.z, qee.w], dtype=np.float64)
         except Exception as e:
             rospy.logwarn_throttle(1.0, f"[bridge] EE TF lookup failed ({self.ee_frame}→{self.world_frame}): {e}")
             return
-        
-        use_q = None
-        if self.orientation_locked and self.catch_quat_world is not None:
-            # use locked velocity-based orientation
-            use_q = self.catch_quat_world
-        else:
-            # use current EE orientation (world←ee)
-            use_q = np.array([q.x, q.y, q.z, q.w], float)
 
-        # --- Publish accepted point + path (only accepted points make the path) ---
+        # Choose orientation for this publish
+        use_q = self.catch_quat_world if self.catch_quat_world is not None else q_ee
+
+        # Publish point & short trail (kept for RViz)
         stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
 
         pto_w = PointStamped()
@@ -258,15 +323,12 @@ class KFtoEETargetBridge:
         pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = p_world.x, p_world.y, p_world.z
         pose.pose.orientation.w = 1.0
         self.pts.append(pose)
-        if len(self.pts) > 20:
-            self.pts = self.pts[-20:]
-        path_msg = Path()
-        path_msg.header.stamp = stamp
-        path_msg.header.frame_id = self.world_frame
+        if len(self.pts) > 20: self.pts = self.pts[-20:]
+        path_msg = Path(); path_msg.header.stamp = stamp; path_msg.header.frame_id = self.world_frame
         path_msg.poses = list(self.pts)
         self.pub_path.publish(path_msg)
 
-        # --- Build and publish EETarget ---
+        # Publish EETarget
         msg = EETarget()
         msg.ee_target.position.x = p_world.x
         msg.ee_target.position.y = p_world.y
@@ -277,12 +339,17 @@ class KFtoEETargetBridge:
         msg.ee_target.orientation.w = float(use_q[3])
         msg.duration = dur
         self.pub.publish(msg)
+
+        # Update state & single critical log
         self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
+        self.get_orientation = True
 
         rospy.loginfo_throttle(
             0.0,
-            f"[bridge] → ee_target @{self.world_frame}: ({p_world.y:.3f},{p_world.z:.3f}), "
-            f"({use_q[0]:.3f}, {use_q[1]:.3f}, {use_q[2]:.3f}, {use_q[3]:.3f}) "
+            f"[bridge] → ee_target @{self.world_frame}: "
+            f"p=({p_world.x:+.3f},{p_world.y:+.3f},{p_world.z:+.3f}) "
+            f"q_cmd=({use_q[0]:+.3f},{use_q[1]:+.3f},{use_q[2]:+.3f},{use_q[3]:+.3f}) "
+            f"q_ee=({q_ee[0]:+.3f},{q_ee[1]:+.3f},{q_ee[2]:+.3f},{q_ee[3]:+.3f}) "
             f"dur={dur:.3f}s"
         )
 

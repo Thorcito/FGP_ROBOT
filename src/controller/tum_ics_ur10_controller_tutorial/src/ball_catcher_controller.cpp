@@ -315,7 +315,7 @@ namespace tum_ics_ur_robot_lli
         ROS_INFO_STREAM_THROTTLE(0.1, "VEL_MES: " << lin_spd);
         double ang_err = dx.tail<3>().norm();   // radians of orientation error
         ROS_INFO_STREAM_THROTTLE(0.1, "ANGLE: " << ang_err);
-        if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.1) {
+        if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.1) { 
           ROS_WARN_STREAM("PARA IDLE");
           ROS_WARN_STREAM("ERROR: " << pos_err);
           ROS_WARN_STREAM("SPEED: " << lin_spd);

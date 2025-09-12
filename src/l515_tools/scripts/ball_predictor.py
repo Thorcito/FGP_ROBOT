@@ -266,6 +266,7 @@ class BallKFPredictor:
         vel.vector.x = self.x[3]
         vel.vector.y = self.x[4]
         vel.vector.z = self.x[5]
+        #rospy.logwarn_throttle(0.0, f"Velocity at instant: (V={self.x[3]:.4f} , {self.x[4]:.4f}, {self.x[5]:.4f})")
         self.pub_current_vel.publish(vel)
 
         # 1) Filtered (only if accepted)
@@ -353,7 +354,7 @@ class BallKFPredictor:
             vel_hit.vector.y = v_hit[1]
             vel_hit.vector.z = v_hit[2]
             self.pub_pred_vel_hit.publish(vel_hit)
-            rospy.logwarn_throttle(0.0, f"Velocity: (V={v_hit[0]:.4f} , {v_hit[1]:.4f}, {v_hit[2]:.4f})")
+            #rospy.logwarn_throttle(0.0, f"Velocity at hit: (V={v_hit[0]:.4f} , {v_hit[1]:.4f}, {v_hit[2]:.4f})")
             
 
             return t_sel, p_sel
