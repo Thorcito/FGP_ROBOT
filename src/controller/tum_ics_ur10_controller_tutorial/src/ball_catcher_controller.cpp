@@ -173,8 +173,27 @@ namespace tum_ics_ur_robot_lli
       if (q0_.dot(q1_) < 0.0) {
         q1_.coeffs() *= -1.0;   // flip sign of q1_ to avoid the π jump
       }
-      //ROS_ERROR_STREAM("q1_ = " << "w: " << q1_.w() << ", x: " << q1_.x() << ", y: " << q1_.y() << ", z: " << q1_.z());
-      cs_spline_duration_ = std::max(1e-6, duration);
+      // ---------- Feasibility checks ----------
+      // 1) Angular speed: angle / T <= omega_max  ->  T >= angle / omega_max
+      Eigen::Quaterniond q_rel = q0_.conjugate() * q1_;
+      q_rel.normalize();
+      Eigen::AngleAxisd aa(q_rel);
+      const double angle = std::abs(aa.angle());                       // [rad]
+      const double T_min_angle = (angle > 1e-6) ? angle / omega_max_rad_ : 0.0;
+
+      // 2) Linear speed: ||dp|| / T <= v_max      ->  T >= ||dp|| / v_max   (optional but useful)
+      const double dist = dp_.norm();
+      const double T_min_pos = dist / std::max(v_max_mps_, 1e-6);
+
+      // Requested T (duration) may come from Tgo; stretch if needed
+      const double T_req = std::max(1e-6, duration);
+      cs_spline_duration_ = std::max({T_req, T_min_angle, T_min_pos});
+      if (cs_spline_duration_ > T_req + 1e-6) {
+        ROS_WARN_STREAM("Stretching T: req=" << T_req
+                        << "  →  used=" << cs_spline_duration_
+                        << " (T_min_angle=" << T_min_angle
+                        << ", T_min_pos=" << T_min_pos << ")");
+      }
       duration_ = 0.0;
       start_interpolation = true;
     }
@@ -236,7 +255,13 @@ namespace tum_ics_ur_robot_lli
         q_rel.normalize();
         Eigen::AngleAxisd aa(q_rel);
         //ROS_WARN_STREAM("Angle= " << aa.angle() << " rad");
-        const Eigen::Vector3d phi = aa.axis() * aa.angle();     // rotation vector (how much radians around each axis)
+        const double ang = std::abs(aa.angle());
+        Eigen::Vector3d phi;
+        if (ang > 1e-9) {
+            phi = aa.axis() * ang;
+        } else {
+            phi = Eigen::Vector3d::Zero();
+        }
         //ROS_WARN_STREAM("Rot Vector= " << phi);
         const Eigen::Vector3d w_ref = sdot * phi;               // approx spatial ω
 
@@ -315,10 +340,10 @@ namespace tum_ics_ur_robot_lli
         ROS_INFO_STREAM_THROTTLE(0.1, "VEL_MES: " << lin_spd);
         double ang_err = dx.tail<3>().norm();   // radians of orientation error
         ROS_INFO_STREAM_THROTTLE(0.1, "ANGLE: " << ang_err);
-        if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.1) { 
+        if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.05) { 
           ROS_WARN_STREAM("PARA IDLE");
-          ROS_WARN_STREAM("ERROR: " << pos_err);
-          ROS_WARN_STREAM("SPEED: " << lin_spd);
+          //ROS_WARN_STREAM("ERROR: " << pos_err);
+          //ROS_WARN_STREAM("SPEED: " << lin_spd);
           ROS_WARN_STREAM("ANGLE: " << ang_err);
           i_delta_x_.setZero();
           next_state = IDLE;
@@ -429,10 +454,37 @@ namespace tum_ics_ur_robot_lli
     { 
       ow::CartesianPosition X_goal_w;
       X_goal_w = msg->ee_target;
-      X_goal_ = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
-      cs_spline_duration_ = msg->duration;
-      start_cartesian_spline_ = true;
-      ROS_ERROR_STREAM("NEW EE GOAL: " << X_goal_.transpose());
+      ow::CartesianPosition X_new = ow::CartesianPosition(model_.T_0_B()) * X_goal_w; // to base frame
+
+      const double POS_EPS = 0.002;     // 2 mm
+      //const double ANG_EPS = 0.25 * M_PI/180.0; // 1 deg in rad
+      const double ANG_EPS = 0.0;
+
+      bool should_update = true;
+      if (has_goal_ &&  (state_ == CARTESIAN_SPLINE || state_ == IDLE)) {
+        Eigen::Vector3d p_old = X_goal_.head<3>();
+        Eigen::Vector3d p_new = X_new.head<3>();
+        const double dp = (p_new - p_old).norm();
+
+        // Orientation distance via quaternion angle
+        Eigen::Quaterniond q_old(X_goal_(6), X_goal_(3), X_goal_(4), X_goal_(5));
+        Eigen::Quaterniond q_new(X_new(6),   X_new(3),   X_new(4),   X_new(5));
+        if (q_old.dot(q_new) < 0.0) q_new.coeffs() *= -1.0;
+        Eigen::AngleAxisd aa(q_old.conjugate() * q_new);
+        const double dtheta = std::abs(aa.angle());
+        should_update = (dp > POS_EPS) || (dtheta > ANG_EPS);
+      }
+
+      if (should_update) {
+        X_goal_ = X_new;
+        cs_spline_duration_ = msg->duration;
+        start_cartesian_spline_ = true;
+        has_goal_ = true;
+        ROS_ERROR_STREAM("NEW EE GOAL: " << X_goal_.transpose());
+      } else {
+        // No restart; just update the stored goal quietly (optional)
+        X_goal_ = X_new;
+      }
     }
 
     bool BallCatcherController::homingHandler(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)

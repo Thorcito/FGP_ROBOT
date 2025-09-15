@@ -9,7 +9,6 @@ import numpy as np
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_geometry_msgs import do_transform_point
-from tf.transformations import quaternion_slerp
 
 
 class KFtoEETargetBridge:
@@ -35,21 +34,15 @@ class KFtoEETargetBridge:
         # Orientation tracking (continuous)
         self.vel_min_speed = float(rospy.get_param("~vel_min_speed_mps", 1.0))
         self.up_world = np.array(rospy.get_param("~up_world", [0.0, 0.0, 1.0]), dtype=np.float64)
-        self.dir_sign = 1.0  # fixed: face the ball (your validated setting)
-        self.dir_alpha = float(rospy.get_param("~dir_alpha", 0.25))  # EMA on direction
-
-        self.track_deadband_deg = float(rospy.get_param("~track_deadband_deg", 2.0))
-        self.track_omega_max_rad = float(rospy.get_param("~track_omega_max_rad", 4.0))
-        self.track_dt_cap_s = float(rospy.get_param("~track_dt_cap_s", 0.12))
+        self.dir_sign = -1.0  # fixed: face the ball (your validated setting)
+        self.dir_alpha = float(rospy.get_param("~dir_alpha", 0.5))  # EMA on direction
 
         # Resets to avoid stale state between throws
         self.reset_on_outside = bool(rospy.get_param("~reset_on_outside", True))
         self.reset_on_big_step = bool(rospy.get_param("~reset_on_big_step", True))
 
         # -------- state --------
-        self.catch_quat_world = None   # XYZW command quat (what we send)
         self.pos_ema = None            # filtered direction
-        self.last_track_stamp = None
 
         self.last_ttg = None
         self.old_x = self.old_y = self.old_z = None
@@ -137,7 +130,7 @@ class KFtoEETargetBridge:
         q /= (np.linalg.norm(q) + 1e-12)
         return q
 
-    def _rot_about_axis_matrix(self, k, phi):
+    def _rot_about_axis_matrix(self, k, phi): #Rodriguey formula
         k = self._unit(k)
         K = np.array([[0,-k[2],k[1]],[k[2],0,-k[0]],[-k[1],k[0],0]], dtype=np.float64)
         I = np.eye(3)
@@ -162,7 +155,8 @@ class KFtoEETargetBridge:
         # minimize roll about Z
         z = R_base[:, 2]
         x_now = R_now[:, 0]
-        def proj_plane(v): return self._unit(v - z * np.dot(z, v))
+        def proj_plane(v): 
+            return self._unit(v - z * np.dot(z, v))
         x_p = proj_plane(x_now)
         x0  = R_base[:, 0]
         s = np.dot(z, np.cross(x0, x_p))
@@ -191,15 +185,10 @@ class KFtoEETargetBridge:
 
         return (q1, quat_angle(q_now, q1)) if quat_angle(q_now, q1) <= quat_angle(q_now, q2) else (q2, quat_angle(q_now, q2))
 
-    def _quat_xyzw_to_wxyz(self, q): return np.array([q[3], q[0], q[1], q[2]], float)
-    def _quat_wxyz_to_xyzw(self, q): return np.array([q[1], q[2], q[3], q[0]], float)
-
     def _reset_orientation_filter(self, why=""):
-        self.catch_quat_world = None
         self.pos_ema = None
-        self.last_track_stamp = None
         if why:
-            rospy.loginfo(f"[bridge] reset orientation ({why})")
+            rospy.logerr(f"[bridge] reset orientation ({why})")
 
     # ---------- callbacks ----------
     def on_ttg(self, msg: Float32):
@@ -226,39 +215,13 @@ class KFtoEETargetBridge:
             self.pos_ema = p_raw
         self.pos_ema = self._unit((1.0 - self.dir_alpha) * self.pos_ema + self.dir_alpha * p_raw)
 
-        # Initialize command quat from current EE if first time
-        if self.catch_quat_world is None:
-            try:
-                T_w_ee = self.buf.lookup_transform(self.world_frame, self.ee_frame,
-                                                   rospy.Time(0), rospy.Duration(0.02))
-                q = T_w_ee.transform.rotation
-                self.catch_quat_world = np.array([q.x, q.y, q.z, q.w], dtype=np.float64)
-                self.catch_quat_world /= (np.linalg.norm(self.catch_quat_world) + 1e-12)
-            except Exception as e:
-                rospy.logwarn_throttle(0.5, f"[bridge] EE TF lookup (init) failed: {e}")
-                return
-
-        # Rate-limited slerp toward +Z aligned with current filtered direction
-        now = msg.header.stamp if msg.header.stamp.to_sec() > 0 else rospy.Time.now()
-        dt_raw = 0.02 if self.last_track_stamp is None else max(1e-3, (now - self.last_track_stamp).to_sec())
-        self.last_track_stamp = now
-        dt = min(dt_raw, self.track_dt_cap_s)
-
-        q_tgt, theta = self._candidate_for_z(self.pos_ema, self.up_world, self.catch_quat_world)
-        theta_deg = math.degrees(theta)
-        if theta_deg > self.track_deadband_deg:
-            step = min(1.0, (self.track_omega_max_rad * dt) / max(theta, 1e-6))
-            q_cmd_wxyz = quaternion_slerp(self._quat_xyzw_to_wxyz(self.catch_quat_world),
-                                          self._quat_xyzw_to_wxyz(q_tgt), step)
-            self.catch_quat_world = self._quat_wxyz_to_xyzw(q_cmd_wxyz)
-
     def on_point(self, p_cam: PointStamped):
         if self.last_ttg is None:
             return
 
         dur = float(self.last_ttg)
         if dur < self.min_duration:
-            rospy.loginfo_throttle(0.0, f"[bridge] Tgo={dur:.3f}s < min {self.min_duration:.2f}s → skip")
+            rospy.logerr_throttle(0.0, f"[bridge] Tgo={dur:.3f}s < min {self.min_duration:.2f}s → skip")
             return
 
         cam_frame = p_cam.header.frame_id or self.camera_frame
@@ -306,7 +269,11 @@ class KFtoEETargetBridge:
             return
 
         # Choose orientation for this publish
-        use_q = self.catch_quat_world if self.catch_quat_world is not None else q_ee
+        if self.pos_ema is not None:
+            q_tgt_xyzw, _ = self._candidate_for_z(self.pos_ema, self.up_world, q_ee)
+            use_q = q_tgt_xyzw
+        else:
+            use_q = q_ee
 
         # Publish point & short trail (kept for RViz)
         stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
@@ -348,8 +315,8 @@ class KFtoEETargetBridge:
             0.0,
             f"[bridge] → ee_target @{self.world_frame}: "
             f"p=({p_world.x:+.3f},{p_world.y:+.3f},{p_world.z:+.3f}) "
-            f"q_cmd=({use_q[0]:+.3f},{use_q[1]:+.3f},{use_q[2]:+.3f},{use_q[3]:+.3f}) "
-            f"q_ee=({q_ee[0]:+.3f},{q_ee[1]:+.3f},{q_ee[2]:+.3f},{q_ee[3]:+.3f}) "
+            f"q=({use_q[0]:+.3f},{use_q[1]:+.3f},{use_q[2]:+.3f},{use_q[3]:+.3f}) "
+            #f"q_ee=({q_ee[0]:+.3f},{q_ee[1]:+.3f},{q_ee[2]:+.3f},{q_ee[3]:+.3f}) "
             f"dur={dur:.3f}s"
         )
 

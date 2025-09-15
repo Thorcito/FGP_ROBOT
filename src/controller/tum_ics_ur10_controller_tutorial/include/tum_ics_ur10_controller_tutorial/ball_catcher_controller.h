@@ -78,6 +78,10 @@ namespace tum_ics_ur_robot_lli
       Vector3d p0_, p1_, dp_ ;
       JointState last_current_;
       Eigen::Quaterniond q0_, q1_;
+      double omega_max_rad_ = 4.2;  // default max tool angular speed [rad/s]
+      double v_max_mps_     = 1.7; 
+      bool has_goal_ = false;
+
 
 
 

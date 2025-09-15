@@ -13,9 +13,9 @@ ball_catcher_controller:
   
   cartesianspace:
     #proportional
-    gains_p: [30, 30, 30, 3.5, 3.5, 3.5]                        # [50, 50, 50, 20, 10, 5]
+    gains_p: [30, 30, 30, 7.5, 7.5, 7.5]                        # [50, 50, 50, 20, 10, 5]
     #derivative
-    gains_d: [120, 100, 100, 3.5, 3.5, 3.5]                     # [100, 75, 75, 73, 15, 5] whats up with q5
+    gains_d: [120, 100, 100, 7.5, 7.5, 7.5]                     # [100, 75, 75, 73, 15, 5] whats up with q5
     #integral part
     gains_i: [30, 30, 30, 10, 10, 10]
 
