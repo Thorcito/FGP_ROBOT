@@ -15,7 +15,7 @@ class KFtoEETargetBridge:
     def __init__(self):
         # -------- params --------
         self.position_topic = rospy.get_param("~position_topic", "/ball_pred/hit_point")
-        self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/current_vel")
+        self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/pred_vel_hit")
         self.ttg_topic      = rospy.get_param("~t_to_int_topic", "/ball_pred/hit_time_s")
 
         self.world_frame    = rospy.get_param("~world_frame", "world")
