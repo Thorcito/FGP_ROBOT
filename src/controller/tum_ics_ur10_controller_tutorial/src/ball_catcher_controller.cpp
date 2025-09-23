@@ -417,9 +417,7 @@ namespace tum_ics_ur_robot_lli
       for (int i = 0; i < 6; ++i) {
         if (js_r.qpp[i] >  QDDOT_MAX) js_r.qpp[i] =  QDDOT_MAX;
         if (js_r.qpp[i] < -QDDOT_MAX) js_r.qpp[i] = -QDDOT_MAX;
-}
-
-
+      }
       Vector6d Sq = current.qp - js_r.qp;
       ur::UR10Model::Regressor Yr = model_.regressor(current.q, current.qp, js_r.qp, js_r.qpp);
 

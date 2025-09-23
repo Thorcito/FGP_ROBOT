@@ -27,7 +27,7 @@ class BallTrackerSync:
         self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.5))
 
         # HSV & morphology (your fixed settings)
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 20,  0]), dtype=np.uint8)
+        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 20,  40]), dtype=np.uint8)
         self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [170, 255, 255]), dtype=np.uint8)
         self.blur_ksize = int(rospy.get_param("~blur", 1))
         self.open_it    = int(rospy.get_param("~open", 6))
