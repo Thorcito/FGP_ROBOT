@@ -16,7 +16,8 @@ class DepthAccuracyNode:
         self.color_topic   = rospy.get_param("~color_topic", "/camera/color/image_roi")  # optional (for future use)
         self.ground_truth  = float(rospy.get_param("~ground_truth_m", 1.40))
         self.num_frames    = int(rospy.get_param("~num_frames", 200))
-        self.csv_path      = rospy.get_param("~csv_path", "src/l515_tools/scripts/Calibration_depth.csv")   # if empty, no CSV
+        #self.csv_path      = rospy.get_param("~csv_path", "src/l515_tools/scripts/Calibration_depth.csv")   # if empty, no CSV
+        self.csv_path      = None
         self.run_tag       = rospy.get_param("~tag", "result")        # optional label for the measurement point
 
         # ---- State

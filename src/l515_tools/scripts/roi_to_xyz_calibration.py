@@ -36,8 +36,10 @@ class ROIToXYZ:
         self.point_log_thresh = float(rospy.get_param("~point_log_thresh_m", 0.1))
         self.max_measurements = int(rospy.get_param("~max_measurements", 10))
         self.time_tolerance_s = float(rospy.get_param("~time_tolerance_s", 0.10))  # sync tolerance RGB<->Depth
-        self.csv_path = rospy.get_param("~csv_path", os.path.expanduser("~/Desktop/Robo_Project_ws/src/l515_tools/scripts/aruco_roi_results.csv"))
-        self.tag = rospy.get_param("~tag", "prueba_5")  # optional label
+        #self.csv_path = rospy.get_param("~csv_path", os.path.expanduser("~/Desktop/Robo_Project_ws/src/l515_tools/scripts/aruco_roi_results.csv"))
+        #self.tag = rospy.get_param("~tag", "prueba_5")  # optional label
+        self.csv_path = None
+        self.tag = None
 
         # --- State ---
         self._last_point = None               # latest ROI XYZ

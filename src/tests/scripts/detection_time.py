@@ -19,12 +19,13 @@ class BallTrackerSync:
 
         # Sync tuning
         self.slop_s      = float(rospy.get_param("~sync_slop_s", 0.005))
-        self.max_dt_s    = float(rospy.get_param("~max_dt_s", 0.006)) 
+        self.max_dt_s    = float(rospy.get_param("~max_dt_s", 0.006))
         self.queue_size  = int(rospy.get_param("~queue_size", 10))
 
         # Depth handling
         self.depth_scale = float(rospy.get_param("~depth_scale", 0.001))
         self.min_valid_z = float(rospy.get_param("~min_valid_z", 0.5))
+        self.valid_ratio_thr = float(rospy.get_param("~valid_ratio_thr", 0.02))  # % pixels with valid depth to consider "uncovered"
 
         # HSV & morphology (your fixed settings)
         self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 20,  40]), dtype=np.uint8)
@@ -42,8 +43,6 @@ class BallTrackerSync:
         # Depth sampling
         self.depth_patch = int(rospy.get_param("~depth_patch", 1))
 
-
-
         # Path for RViz
         self.path_publish = bool(rospy.get_param("~publish_path", True))
         self.path_maxlen  = int(rospy.get_param("~path_maxlen", 50))
@@ -52,7 +51,7 @@ class BallTrackerSync:
         # Camera intrinsics
         self.fx = self.fy = self.cx = self.cy = None
 
-        # Publishers
+        # Publishers (unchanged from your code)
         self.pub_point   = rospy.Publisher("/ball_meas/point", PointStamped, queue_size=10)
         self.pub_pose    = rospy.Publisher("/ball_meas/pose", PoseStamped, queue_size=10)
         self.pub_path    = rospy.Publisher("/ball_meas/path", Path, queue_size=10) if self.path_publish else None
@@ -73,10 +72,25 @@ class BallTrackerSync:
         rospy.loginfo("BallTrackerSync: ATS slop=%.3f s, max_dt=%.3f s, queue=%d",
                       self.slop_s, self.max_dt_s, self.queue_size)
 
+        # ---- minimal trial state machine ----
+        self._state = "OCCLUDED"   # OCCLUDED → WAITING_DETECTION
+        self._t_uncover = None     # rospy.Time when first valid depth appears after occlusion
+        self._armed_for_trial = False  # ensure only first detection after uncover triggers timing
+
     def caminfo_cb(self, msg: CameraInfo):
         self.fx, self.fy, self.cx, self.cy = msg.K[0], msg.K[4], msg.K[2], msg.K[5]
         if msg.header.frame_id:
             self.frame_id = msg.header.frame_id
+
+    def _valid_depth_mask(self, depth_u16):
+        d_m = depth_u16.astype(np.float32) * self.depth_scale
+        return np.isfinite(d_m) & (d_m > 0.0) & (d_m >= self.min_valid_z)
+
+    def _is_occluded(self, depth_u16):
+        valid = self._valid_depth_mask(depth_u16)
+        total = valid.size if valid.size > 0 else 1
+        ratio = float(np.count_nonzero(valid)) / float(total)
+        return ratio < self.valid_ratio_thr, ratio
 
     def sync_cb(self, rgb_msg: Image, depth_msg: Image):
         # Ensure intrinsics ready
@@ -95,6 +109,26 @@ class BallTrackerSync:
 
         H, W = depth_u16.shape[:2]
 
+        # ---- occlusion / uncover detection (0 or NaN both treated invalid) ----
+        occluded, valid_ratio = self._is_occluded(depth_u16)
+        if self._state == "OCCLUDED":
+            if not occluded:
+                self._state = "WAITING_DETECTION"
+                self._t_uncover = rgb_msg.header.stamp   # first frame with valid depth
+                self._armed_for_trial = True
+                rospy.loginfo("Paper removed (valid_ratio=%.3f). Trial armed.", valid_ratio)
+                return
+        else:  # WAITING_DETECTION
+            if occluded:
+                # Back to occluded → re-arm next trial
+                self._state = "OCCLUDED"
+                self._t_uncover = None
+                self._armed_for_trial = False
+                rospy.loginfo("Occluded again. Re-arming.")
+                # continue so you can show debug frames if desired
+                # (but safest is to early-return)
+                # return
+
         # 1) HSV mask
         hsv = cv2.cvtColor(rgb, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
@@ -112,76 +146,54 @@ class BallTrackerSync:
         for c in cnts:
             area = cv2.contourArea(c)
             if area <= self.min_area_px:
-                #rospy.loginfo("AREA MINIMA")
-                #rospy.loginfo(area)
                 continue
             peri = cv2.arcLength(c, True)
-            #rospy.loginfo(area)
             if peri <= 0:
-                #rospy.loginfo("PERIMETRO MINIMO")
-                #rospy.loginfo(peri)
                 continue
             circ = 4.0*np.pi*area/(peri*peri)
-            #rospy.logerr(circ)
             if circ < self.min_circularity:
-                #rospy.loginfo("CIRC ERROR")
-                #rospy.loginfo(circ)
                 continue
             (x, y), r = cv2.minEnclosingCircle(c)
             score = circ**2 * area
             if best is None or score > best[0]:
                 best = (score, int(x), int(y), float(r), c)
-                #rospy.loginfo(score)
 
         debug = rgb.copy()
         if best is None:
             self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
             self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
-            #rospy.logwarn("NO BALL")
             return
 
         _, u, v, r, contour = best
         cv2.circle(debug, (u, v), int(r), (0,255,0), 2)
         cv2.circle(debug, (u, v), 3, (0,0,255), -1)
 
-        '''Pixel depth gathering
-        z_center = float(depth_u16[v,u]) * self.depth_scale
-        if z_center <= 0:
-            rospy.logwarn("XXXX")
-            return
-        Z = z_center
-        '''
         # 3) Depth Z median around center (from synchronized depth frame)
         half = self.depth_patch // 2
         x0 = max(0, u - half); x1 = min(W, u + half + 1)
         y0 = max(0, v - half); y1 = min(H, v + half + 1)
-
         patch = depth_u16[y0:y1, x0:x1].astype(np.float32) * self.depth_scale
-        #rospy.logerr(patch)
         cv2.rectangle(debug, (x0, y0), (x1, y1), (255, 255, 255), 4)
-        valid = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z)
-        if np.count_nonzero(valid) == 0:
+
+        valid_patch = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z)
+        if np.count_nonzero(valid_patch) == 0:
             self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
             self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
-            #rospy.logerr("No depth data")
             return
-        Z = float(np.median(patch[valid]))
+        Z = float(np.median(patch[valid_patch]))
 
         # 4) Back-project to 3D in camera_color_optical_frame
         X = (u - self.cx) * Z / self.fx
         Y = (v - self.cy) * Z / self.fy
-        #rospy.loginfo(f"XYpix=({u:.3f},{v:.3f})pix")
-        #rospy.loginfo(f"XYZ=({X:.3f},{Y:.3f},{Z:.6f})m")
-        
+
         if self.max_jump_m > 0:
             if self._last_xyz is not None:
                 dx = X - self._last_xyz[0]
                 dy = Y - self._last_xyz[1]
                 dz = Z - self._last_xyz[2]
                 dist = (dx**2 + dy**2 + dz**2)**0.5
-                #rospy.loginfo(dist)
                 if dist > self.max_jump_m:
-                    rospy.logwarn_throttle(1.0, f"Bad Measurement (distance={dist:.2f})")
+                    rospy.logwarn_throttle(1.0, "Bad Measurement (distance=%.2f)", dist)
                     self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
                     self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
                     self._last_xyz = (X,Y,Z)
@@ -189,7 +201,16 @@ class BallTrackerSync:
         self._last_xyz = (X,Y,Z)
         stamp = rgb_msg.header.stamp  # use the synchronized timestamp
 
-        # 5) Publish PlotJuggler-friendly topics
+        # ---- detection timing (only prints to terminal) ----
+        if self._state == "WAITING_DETECTION" and self._armed_for_trial and (self._t_uncover is not None):
+            det_time = (stamp - self._t_uncover).to_sec()
+            rospy.logerr("Detection time: %f s (uncover@%.3f → detect@%.3f)",
+                          det_time, self._t_uncover.to_sec(), stamp.to_sec())
+            # Disarm until next occlusion cycle
+            self._armed_for_trial = False
+            self._t_uncover = None
+
+        # 5) Publish (kept exactly as your original behavior)
         pt = PointStamped()
         pt.header = Header(stamp=stamp, frame_id=self.frame_id)
         pt.point.x, pt.point.y, pt.point.z = X, Y, Z
@@ -213,20 +234,13 @@ class BallTrackerSync:
             self.pub_path.publish(path_msg)
 
         # Debug overlays
-        
         cv2.putText(debug, f"XYZ=({X:.3f},{Y:.3f},{Z:.3f})m",
                     (u+8, max(20, v-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,220,220), 2, cv2.LINE_AA)
-        '''
-        cv2.putText(debug, f"Z=({Z:.6f})m",
-                    (u+8, max(20, v-10)), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0,220,220), 4, cv2.LINE_AA)
-        '''
         self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
         self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
 
 if __name__ == "__main__":
     rospy.init_node("ball_tracker_sync")
-    # Set TCP no-delay to reduce latency (rospy supports TransportHints)
-    rospy.Subscriber.__init__
     try:
         BallTrackerSync()
         rospy.spin()
