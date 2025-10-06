@@ -216,6 +216,8 @@ class KFtoEETargetBridge:
         self.pos_ema = self._unit((1.0 - self.dir_alpha) * self.pos_ema + self.dir_alpha * p_raw)
 
     def on_point(self, p_cam: PointStamped):
+        t_cb_start = rospy.Time.now()
+
         if self.last_ttg is None:
             return
 
@@ -275,6 +277,10 @@ class KFtoEETargetBridge:
         else:
             use_q = q_ee
 
+        t_pub = rospy.Time.now()
+        latency_proc = (t_pub - t_cb_start).to_sec()
+        rospy.loginfo(f"Latency: ({latency_proc}) s")
+
         # Publish point & short trail (kept for RViz)
         stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
 
@@ -319,6 +325,7 @@ class KFtoEETargetBridge:
             #f"q_ee=({q_ee[0]:+.3f},{q_ee[1]:+.3f},{q_ee[2]:+.3f},{q_ee[3]:+.3f}) "
             f"dur={dur:.3f}s"
         )
+
 
 
 if __name__ == "__main__":

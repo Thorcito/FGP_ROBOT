@@ -208,11 +208,14 @@ namespace tum_ics_ur_robot_lli
 
       ROS_INFO_STREAM_THROTTLE(0.5, "X_ee_w: " << ow::CartesianPosition(model_.T_tool_0(current.q)).transpose());
 
+      //ROS_INFO_STREAM("VELOCITY: " << current.qp.transpose());
+      //ROS_INFO_STREAM("ACCELERATION: " << current.qpp.transpose());
+
       // dt
       ros::Time t = ros::Time::now();
       ros::Duration period = prev_time_.isZero() ? ros::Duration(0.0) : (t - prev_time_);
       prev_time_ = t;
-      //ROS_INFO_STREAM("Control cycle: " << period);
+      ROS_INFO_STREAM("Control cycle: " << period);
 
       if (state_ == JOINT_SPLINE)
       {
@@ -285,6 +288,7 @@ namespace tum_ics_ur_robot_lli
 
         // Run the controller on this interpolated reference
         tau_ = cartesian_space_controller(current, cs_ref, period);
+        ROS_INFO_STREAM("VELOCITAAAT: " << current.qp.transpose());
       }
 
       return tau_;
@@ -390,6 +394,8 @@ namespace tum_ics_ur_robot_lli
       ow::CartesianState cs_current;
       cs_current.pos() = ow::CartesianPosition(model_.T_tool_0(current.q));
       cs_current.vel() = ow::CartesianVelocity(J_tool_0 * current.qp);
+      //ROS_ERROR_STREAM("Velocidad_current: " << cs_current.vel().transpose());
+      //ROS_ERROR_STREAM("Velocidad_ref: " << ref.vel().transpose());
       cs_current.acc().setZero();
 
       // errors

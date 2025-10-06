@@ -1,0 +1,64 @@
+Tracking: 
+	Latency: (0.004493952) s
+	Latency: (0.00518322) s
+	Latency: (0.006475448) s
+	Latency: (0.006437779) s
+	Latency: (0.005146265) s
+	Latency: (0.006003618) s
+	Latency: (0.005406857) s
+	Latency: (0.004465342) s
+	Latency: (0.0074687) s
+	Latency: (0.006274939) s
+	Latency: (0.005211592) s
+	Latency: (0.004989148) s
+	
+Predictor:
+	Latency: (0.000648022) s
+	Latency: (0.00035572) s
+	Latency: (0.000508308) s
+	Latency: (0.000705003) s
+	Latency: (0.000385523) s
+	Latency: (0.000424146) s
+	Latency: (0.000390292) s
+	Latency: (0.000488281) s
+	Latency: (0.000460386) s
+	Latency: (0.000354529) s
+	Latency: (0.000351667) s
+	Latency: (0.000427246) s
+
+Transformer:
+	Latency: (0.000271797) s
+	Latency: (0.000180006) s
+	Latency: (0.001259565) s
+	Latency: (0.001334429) s
+	Latency: (0.001606941) s
+	Latency: (0.001190901) s
+	Latency: (0.002001524) s
+
+Controller:
+	Control cycle: 0.002544615
+	Control cycle: 0.002788483
+	Control cycle: 0.002858736
+	Control cycle: 0.002888118
+	Control cycle: 0.002750249
+	Control cycle: 0.003080344
+	Control cycle: 0.001603384
+	Control cycle: 0.001926114
+	Control cycle: 0.002098557
+	Control cycle: 0.002926327
+	Control cycle: 0.002146168
+	Control cycle: 0.001569351
+	Control cycle: 0.001871060
+	Control cycle: 0.002011224
+	Control cycle: 0.002145697
+	Control cycle: 0.002037301
+	Control cycle: 0.001846329
+	Control cycle: 0.002056563
+	Control cycle: 0.001936942
+	Control cycle: 0.002189715
+	Control cycle: 0.002973237
+	Control cycle: 0.003462619
+
+
+
+

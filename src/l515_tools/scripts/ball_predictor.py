@@ -363,6 +363,10 @@ class BallKFPredictor:
 
     # ---------- callback ----------
     def cb_meas(self, msg: PointStamped):
+
+        t_cb_start = rospy.Time.now()
+
+
         if msg.header.frame_id and msg.header.frame_id != self.frame_id:
             rospy.logwarn_throttle(1.0, "Incoming frame %s != %s, treating as camera frame",
                                    msg.header.frame_id, self.frame_id)
@@ -393,6 +397,9 @@ class BallKFPredictor:
 
         self.predict_step(dt)
         accepted, d2 = self.update_step(z_meas)
+        t_pub = rospy.Time.now()
+        latency_proc = (t_pub - t_cb_start).to_sec()
+        rospy.loginfo(f"Latency: ({latency_proc}) s")
         t_hit, p_hit = self.publish_all(msg.header.stamp, accepted)
 
         if self.csv_path:
