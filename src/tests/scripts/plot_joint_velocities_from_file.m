@@ -4,13 +4,13 @@ function plot_joint_velocities_multi(input_arg)
 %
 % Usage:
 %   plot_joint_velocities_multi('folder_with_txts')
-%   plot_joint_velocities_from_file({'velocities.txt','velocities_2.txt', 'velocities_3.txt', 'velocities_4.txt'})
+%   plot_joint_velocities_from_file({'velocities.txt','velocities_2.txt', 'velocities_3.txt', 'velocities_4.txt', 'velocities_5.txt', 'velocities_6.txt', 'velocities_7.txt'})
 
     % -------- Settings --------
     sample_dt = 0.002;         % seconds per sample
     pattern   = 'VELOCITAAAT:'; % token to search in each line
     save_png  = false;          % save figure as PNG
-    save_csv  = false;          % save stats as CSV
+    save_csv  = true;          % save stats as CSV
     csv_name  = 'joint_velocity_stats.csv';
 
     % -------- Resolve file list --------
@@ -69,7 +69,7 @@ function plot_joint_velocities_multi(input_arg)
         title(sprintf('Joint %d Velocity', j));
         xlabel('Time (s)'); ylabel('Velocity (rad/s)');
         if j == 1
-            legend('Interpreter','none','Location','best');
+            legend('Test 1', 'Test 2', 'Test 3', 'Test 4', 'Test 5', 'Test 6', 'Test 7');
         end
         hold off;
     end
