@@ -215,7 +215,7 @@ namespace tum_ics_ur_robot_lli
       ros::Time t = ros::Time::now();
       ros::Duration period = prev_time_.isZero() ? ros::Duration(0.0) : (t - prev_time_);
       prev_time_ = t;
-      ROS_INFO_STREAM("Control cycle: " << period);
+      //ROS_INFO_STREAM("Control cycle: " << period);
 
       if (state_ == JOINT_SPLINE)
       {
