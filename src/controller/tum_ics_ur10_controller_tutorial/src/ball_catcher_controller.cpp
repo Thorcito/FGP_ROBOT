@@ -288,7 +288,7 @@ namespace tum_ics_ur_robot_lli
 
         // Run the controller on this interpolated reference
         tau_ = cartesian_space_controller(current, cs_ref, period);
-        ROS_INFO_STREAM("VELOCITAAAT: " << current.qp.transpose());
+        //ROS_INFO_STREAM("VELOCITAAAT: " << current.qp.transpose());
       }
 
       return tau_;

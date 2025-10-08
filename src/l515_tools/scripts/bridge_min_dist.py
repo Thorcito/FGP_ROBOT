@@ -39,6 +39,8 @@ class KFtoEETargetBridgeMinDist:
         # -------- state --------
         self.pos_ema = None
         self.old_x = self.old_y = self.old_z = None
+        self.pts = []
+        self.pts_2 = []
 
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
@@ -48,10 +50,10 @@ class KFtoEETargetBridgeMinDist:
 
         # -------- pubs --------
         self.pub = rospy.Publisher("ee_target", EETarget, queue_size=1)
-        #self.pub_point = rospy.Publisher("Bridge_minDist/punto", PointStamped, queue_size=10)
-        #self.pub_path  = rospy.Publisher("Bridge_minDist/path", Path, queue_size=10)
-        #self.pub_best_t    = rospy.Publisher("Bridge_minDist/best_t", Float32, queue_size=10)
-        #self.pub_best_cost = rospy.Publisher("Bridge_minDist/best_cost", Float32, queue_size=10)
+        self.pub_point = rospy.Publisher("Bridge_minDist/punto", PointStamped, queue_size=10)
+        self.pub_path  = rospy.Publisher("Bridge_minDist/path", Path, queue_size=10)
+        self.pub_point_op2 = rospy.Publisher("Bridge_minDist/punto_op2", PointStamped, queue_size=10)
+        self.pub_path_op2  = rospy.Publisher("Bridge_minDist/path_op2", Path, queue_size=10)
 
         # -------- exact time sync subscribers --------
         pos_sub = message_filters.Subscriber(self.position_topic, PointStamped)
@@ -176,17 +178,34 @@ class KFtoEETargetBridgeMinDist:
         dist = pos_robot - ball_tray
         return float(dist@dist)
     
-    def derivate_distance_squared(self, pos_robot, p0_ball, v0_ball, gravity):
+    def derivate_distance_squared(self, pos_robot, p0_ball, v0_ball, g):
         #Given the equation At3+Bt2+Ct+D=0
-        g = gravity[2]
-        A = (g*g)/2 #g²*t³
-        B = (3*g*v0_ball[2])/2 #3*g*v_z*t²
-        C = v0_ball@v0_ball-g*(pos_robot[2]-p0_ball[2]) #2(v*v-g(p_r-p_b)_z)
-        D = -(pos_robot-p0_ball)@v0_ball
+        A = 0.5*(g@g) #0.5g²*t³
+        B = -1.5*g@v0_ball #-1.5*g*v*t²
+        C = v0_ball@v0_ball+g@(pos_robot-p0_ball) #(v²+g(p_r-p_b))
+        D = -(pos_robot-p0_ball)@v0_ball #-v(p_r-p_b)
         coeff = np.array([A, B, C, D])
-        
         roots = np.roots(coeff)
+        #rospy.logerr(f"[brrdge] ROOTS: ({roots})." )
         return roots
+    
+    def future_trajectories(self, p0_ball, v0_ball, g, t_total=1.0, n_points=10):
+        # Generate evenly spaced time steps from 0 to t_total
+        t = np.linspace(0, t_total, n_points)
+        t_col = t[:, None]                                 
+        traj = p0_ball + v0_ball*t_col + 0.5*g*(t_col**2)   
+        return t, traj
+    
+    def minimize_distance(self, pos_robot, trajectories, times):
+        pos_robot = np.asarray(pos_robot).reshape(1, 3)
+        trajectories = np.asarray(trajectories)
+        diff = trajectories - pos_robot                     
+        min_distances = 0.5 * np.sum(diff**2, axis=1)                   
+        idx = int(np.argmin(min_distances))
+        closet_point = trajectories[idx]
+        time = times[idx]
+
+        return time, closet_point
     
     def minimize_time(self, pos_robot, p0_ball, v0_ball, g):
         #set minimun and maximun times to solve
@@ -200,9 +219,9 @@ class KFtoEETargetBridgeMinDist:
                 if t_min <= t_real <= t_max:
                     candidates.append(t_real)
         candidates.extend([t_min, t_max])
-        desired_pos = [self.distance_squared(pos_robot, p0_ball, v0_ball, t_real, g) for t_real in candidates]
-        desired_time = int(np.argmin(desired_pos))
-        return float(candidates[desired_time]), float(desired_pos[desired_time])
+        distance = [self.distance_squared(pos_robot, p0_ball, v0_ball, t_real, g) for t_real in candidates]
+        desired_time = int(np.argmin(distance))
+        return float(candidates[desired_time]), float(distance[desired_time])
     
     # ---------- paired callback ----------
     def on_pair(self, p_cam: PointStamped, v_cam: Vector3Stamped):
@@ -247,13 +266,24 @@ class KFtoEETargetBridgeMinDist:
             rospy.logwarn_throttle(0.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
             return
         
-        #Optimization
+        #Optimization 1
         vel_no_q = np.array([v_world[0], v_world[1], v_world[2]], dtype=np.float64)
         t_star, f_star = self.minimize_time(pe, point, vel_no_q, self.g_world)
         
         p_star = point + vel_no_q*t_star + 0.5*self.g_world*(t_star*t_star)
+    
+        #Optimization 2
+        times_opt2, poss_opt2 = self.future_trajectories(point, vel_no_q, self.g_world, t_total=1, n_points=10)
+        t_desired_opt2, p_desired_opt2 = self.minimize_distance(pe, poss_opt2, times_opt2)
 
-        rospy.loginfo(f"[brodge] T: {t_star} , Min_Dist: {np.sqrt(f_star)}" )
+        if t_star != 0:
+            rospy.logwarn(f"[bridge] T: {t_star} , Min_Dist: {f_star}" )
+            rospy.loginfo(f"[bridge] POS: {p_star} " )
+            rospy.loginfo(f"[bridge] EE: {pe} " )
+            rospy.logwarn(f"[bridge] T_OPT2: {t_desired_opt2} , POS_OPT: ({p_desired_opt2})" )
+        else:
+            rospy.logerr(f"[bridge] No valid root found T: {t_star} " )
+
 
         # Choose orientation for this publish
         if self.pos_ema is not None:
@@ -261,18 +291,55 @@ class KFtoEETargetBridgeMinDist:
             use_q = q_tgt_xyzw
         else:
             use_q = q_ee
-
         # Publish EETarget
-        msg = EETarget()
-        msg.ee_target.position.x = p_star[0]
-        msg.ee_target.position.y = p_star[1]
-        msg.ee_target.position.z = p_star[2]
-        msg.ee_target.orientation.x = float(use_q[0])
-        msg.ee_target.orientation.y = float(use_q[1])
-        msg.ee_target.orientation.z = float(use_q[2])
-        msg.ee_target.orientation.w = float(use_q[3])
-        msg.duration = t_star
-        self.pub.publish(msg)
+        if t_star != 0 and f_star <= 0.1:
+            stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
+            pto_w = PointStamped()
+            pto_w.header.stamp = stamp
+            pto_w.header.frame_id = self.world_frame
+            pto_w.point.x, pto_w.point.y, pto_w.point.z = p_star[0], p_star[1], p_star[2]
+            self.pub_point.publish(pto_w)
+
+            pose = PoseStamped()
+            pose.header.stamp = stamp
+            pose.header.frame_id = self.world_frame
+            pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = p_star[0], p_star[1], p_star[2]
+            pose.pose.orientation.w = 1.0
+            self.pts.append(pose)
+            if len(self.pts) > 20: self.pts = self.pts[-20:]
+            path_msg = Path(); path_msg.header.stamp = stamp; path_msg.header.frame_id = self.world_frame
+            path_msg.poses = list(self.pts)
+            self.pub_path.publish(path_msg)
+
+            #Optimization 2
+            stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
+            pto_op2 = PointStamped()
+            pto_op2.header.stamp = stamp
+            pto_op2.header.frame_id = self.world_frame
+            pto_op2.point.x, pto_op2.point.y, pto_op2.point.z = p_desired_opt2[0], p_desired_opt2[1], p_desired_opt2[2]
+            self.pub_point_op2.publish(pto_op2)
+
+            pose_op2 = PoseStamped()
+            pose_op2.header.stamp = stamp
+            pose_op2.header.frame_id = self.world_frame
+            pose_op2.pose.position.x, pose_op2.pose.position.y, pose_op2.pose.position.z = p_desired_opt2[0], p_desired_opt2[1], p_desired_opt2[2]
+            pose_op2.pose.orientation.w = 1.0
+            self.pts_2.append(pose_op2)
+            if len(self.pts_2) > 20: self.pts_2 = self.pts_2[-20:]
+            path_msg_op2 = Path(); path_msg_op2.header.stamp = stamp; path_msg_op2.header.frame_id = self.world_frame
+            path_msg_op2.poses = list(self.pts_2)
+            self.pub_path_op2.publish(path_msg_op2)
+
+            msg = EETarget()
+            msg.ee_target.position.x = p_star[0]
+            msg.ee_target.position.y = p_star[1]
+            msg.ee_target.position.z = p_star[2]
+            msg.ee_target.orientation.x = float(use_q[0])
+            msg.ee_target.orientation.y = float(use_q[1])
+            msg.ee_target.orientation.z = float(use_q[2])
+            msg.ee_target.orientation.w = float(use_q[3])
+            msg.duration = t_star
+            self.pub.publish(msg)
 
         # Update state & single critical log
         self.old_x, self.old_y, self.old_z = p_star[0], p_star[1], p_star[2]
