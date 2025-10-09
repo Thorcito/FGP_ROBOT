@@ -331,14 +331,14 @@ class KFtoEETargetBridgeMinDist:
             self.pub_path_op2.publish(path_msg_op2)
 
             msg = EETarget()
-            msg.ee_target.position.x = p_star[0]
-            msg.ee_target.position.y = p_star[1]
-            msg.ee_target.position.z = p_star[2]
+            msg.ee_target.position.x = p_desired_opt2[0]
+            msg.ee_target.position.y = p_desired_opt2[1]
+            msg.ee_target.position.z = p_desired_opt2[2]
             msg.ee_target.orientation.x = float(use_q[0])
             msg.ee_target.orientation.y = float(use_q[1])
             msg.ee_target.orientation.z = float(use_q[2])
             msg.ee_target.orientation.w = float(use_q[3])
-            msg.duration = t_star
+            msg.duration = t_desired_opt2
             self.pub.publish(msg)
 
         # Update state & single critical log

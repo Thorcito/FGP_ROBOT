@@ -189,7 +189,7 @@ namespace tum_ics_ur_robot_lli
       const double T_req = std::max(1e-6, duration);
       cs_spline_duration_ = std::max({T_req, T_min_angle, T_min_pos});
       if (cs_spline_duration_ > T_req + 1e-6) {
-        ROS_WARN_STREAM("Stretching T: req=" << T_req
+        ROS_ERROR_STREAM("Stretching T: req=" << T_req
                         << "  →  used=" << cs_spline_duration_
                         << " (T_min_angle=" << T_min_angle
                         << ", T_min_pos=" << T_min_pos << ")");
@@ -332,23 +332,40 @@ namespace tum_ics_ur_robot_lli
 
       if (state_ == CARTESIAN_SPLINE)
       {
+        static ros::Time start_time = ros::Time::now();  // initialize once per state entry
+        static bool first_call = true;
+
+        // ---- Get Current Time ----
+        ros::Time current_time = ros::Time::now();
+
+        // ---- Compute delta since start ----
+        double delta_time = (current_time - start_time).toSec();
+
+        // ---- Reset timer when entering the state (first iteration) ----
+        if (first_call) {
+          start_time = current_time;
+          delta_time = 0.0;
+          first_call = false;
+        }
         ow::CartesianPosition X = ow::CartesianPosition(model_.T_tool_0(current.q));
         ow::Matrix6 J = model_.J_tool_0(current.q);
         ow::CartesianVelocity V = ow::CartesianVelocity(J * current.qp);
-        ///////////////////////////////////////////77
+        ///////////////////////////////////////////
         Vector6d dx = ow::cartesianError(X, X_goal_);
         //////////////////////////////////////////////////
         double pos_err = dx.head<3>().norm();
-        ROS_INFO_STREAM_THROTTLE(0.1, "ERROR: " << pos_err);
+        //ROS_INFO_STREAM_THROTTLE(0.1, "ERROR: " << pos_err);
         double lin_spd = V.head<3>().norm();
-        ROS_INFO_STREAM_THROTTLE(0.1, "VEL_MES: " << lin_spd);
+        //ROS_INFO_STREAM_THROTTLE(0.1, "VEL_MES: " << lin_spd);
         double ang_err = dx.tail<3>().norm();   // radians of orientation error
-        ROS_INFO_STREAM_THROTTLE(0.1, "ANGLE: " << ang_err);
+        //ROS_INFO_STREAM_THROTTLE(0.1, "ANGLE: " << ang_err);
+        //ROS_INFO_STREAM_THROTTLE(0.1, "Δt: " << delta_time << " s");
+        ROS_INFO_STREAM("ERROR: " << pos_err << "m ANGLE: " << ang_err << "rad Δt: " << delta_time << " s");
         if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.05) { 
           ROS_WARN_STREAM("PARA IDLE");
           //ROS_WARN_STREAM("ERROR: " << pos_err);
           //ROS_WARN_STREAM("SPEED: " << lin_spd);
-          ROS_WARN_STREAM("ANGLE: " << ang_err);
+          //ROS_WARN_STREAM("ANGLE: " << ang_err);
           i_delta_x_.setZero();
           next_state = IDLE;
           start_interpolation = false;
@@ -484,7 +501,7 @@ namespace tum_ics_ur_robot_lli
         cs_spline_duration_ = msg->duration;
         start_cartesian_spline_ = true;
         has_goal_ = true;
-        ROS_ERROR_STREAM("NEW EE GOAL: " << X_goal_.transpose());
+        ROS_ERROR_STREAM("NEW EE GOAL: " << X_goal_.transpose() << "TtoGo: " << cs_spline_duration_);
       } else {
         // No restart; just update the stored goal quietly (optional)
         X_goal_ = X_new;
