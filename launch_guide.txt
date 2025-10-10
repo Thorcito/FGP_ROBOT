@@ -1,0 +1,22 @@
+Launch Guide.
+-Install RealSense Camera ROS Wrapper (https://github.com/IntelRealSense/realsense-ros/tree/ros1-legacy)
+-Launch camera with alligned depth and rgb topics and syncronized. (align_depth:=true   enable_sync:=true)
+-command-> roslaunch realsense2_camera rs_camera.launch   enable_color:=true enable_depth:=true align_depth:=true   enable_sync:=true color_width:=1280 color_height:=720 color_fps:=30   depth_width:=1280 depth_height:=720 depth_fps:=30
+-launch ICS_UR10 bringup (for vizualizating the camera, robot, ball trayectories in the same worksapace).
+-command -> roslaunch tum_ics_ur10_bringup bringUR10.launch 
+-launch tracking node (this nodes is in charge of detecting the ball and filter its center in coordentes with respect to the camera)
+-command -> rosrun l515_tools ball_tracker.py 
+-Chose criterion to evaluate:
+----
+--PLANE INTERCEPTION CRITERION--
+-launch predictor node (this node is in charge of predicting the position using the KF and also the interception point and time to hit the plane)
+-command -> rosrun l515_tools ball_predictor.py
+-launch transformation node (this node is in charge to convert the interception point from the camera frame to the world frame and also generate the orientation based on the velocity vector)
+-command -> rosrun l515_tools interception_publisher.py
+--MIN DISTANCE CRITERION--
+-launch predictor node (this node is in charge purely of producing the output position of velocity of the KF)
+-command -> rosrun l515_tools ball_predictor_min_dist.py
+-launch bridge node(this node is in charge of doing the optimization and generating the orientation based on the velocity, also transforming the coordenates to the world frame)
+----
+-launch the controller node (this node is in charge to move the robot to the desired position and orientation feeded to it
+-command -> roslaunch tum_ics_ur10_controller_tutorial testBallCatcherController.launch 
