@@ -1,4 +1,62 @@
 #!/usr/bin/env python3
+"""
+BallKFPredictor (plane-interception criterion)
+
+Purpose
+-------
+- Consume 3D ball measurements in the *camera optical frame*.
+- Run a constant-acceleration Kalman Filter (state: position + velocity).
+- Apply robust measurement handling with Mahalanobis gating (soft/hard).
+- Predict the ballistic trajectory under gravity expressed in the camera frame.
+- Compute intercept with a chosen plane ("x" -> YZ plane at x=const, "z" -> XY plane at z=const).
+- Publish filtered states, predicted future points/path, plane-hit point/time, and diagnostics.
+- (Optional) Log CSV rows per update (currently disabled by setting csv_path=None on purpose).
+
+Inputs
+------
+/ball_meas/point : geometry_msgs/PointStamped (X,Y,Z in camera frame)
+
+Outputs (selected)
+------------------
+/ball_pred/point_filt    : geometry_msgs/PointStamped (filtered position)
+/ball_pred/pred_point    : geometry_msgs/PointStamped (lookahead prediction)
+/ball_pred/pred_path     : nav_msgs/Path              (future ballistic samples)
+/ball_pred/path_filt     : nav_msgs/Path              (history of filtered positions)
+/ball_pred/hit_point     : geometry_msgs/PointStamped (intercept on selected plane)
+/ball_pred/hit_time_s    : std_msgs/Float32           (time-to-plane along ballistic path)
+/ball_pred/hit_history   : nav_msgs/Path              (recent hits for RViz)
+/ball_pred/static_plane  : visualization_msgs/Marker  (plane visualization)
+/ball_pred/current_vel   : geometry_msgs/Vector3Stamped (KF velocity at current time)
+/ball_pred/pred_vel_hit  : geometry_msgs/Vector3Stamped (velocity at intercept time)
+
+Key params (~private)
+---------------------
+~frame_id                : output frame id (default "camera_color_optical_frame")
+~input_topic             : input measurement topic (default "/ball_meas/point")
+~g_cam                   : gravity in camera frame (default [0, 9.81, 0])
+~sigma_pos_xyz           : per-axis measurement std dev [m]
+~sigma_acc_xyz           : per-axis process (acceleration) std dev [m/s^2]
+~init_pos_std_m          : init position std dev [m]
+~init_vel_std_mps        : init velocity std dev [m/s]
+~lookahead_s             : time ahead for single predicted point [s]
+~pred_horizon_s          : total prediction horizon [s]
+~pred_dt_s               : sampling step for pred_path [s]
+~min_dt_s, ~max_dt_s     : clamp dt between updates
+~keep_filtered_path      : enable filtered path publication
+~filtered_path_max       : max stored filtered poses
+~meas_gate_*             : gating thresholds (soft/hard) and warmup counters
+~plane_mode              : "x" (YZ plane) or "z" (XY plane)
+~x_plane_m, ~z_plane_m   : plane positions (meters, in camera frame)
+~hit_horizon_s           : max allowed intercept time [s]
+~hit_history_max         : stored hits for RViz
+~csv_path                : CSV output path (ignored when set to empty/None)
+
+Notes
+-----
+- All kinematics/planes live in the *camera* frame. If you need world/base, do it downstream.
+- CSV logging is explicitly disabled below via self.csv_path = None (kept intentionally).
+"""
+
 import rospy, numpy as np
 from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from nav_msgs.msg import Path
@@ -14,9 +72,11 @@ class BallKFPredictor:
         self.input_topic   = rospy.get_param("~input_topic", "/ball_meas/point")
 
         # gravity in CAMERA frame (+Y is down for your camera)
+        # Example: for RealSense L515 mounted with +Y downward in optical frame.
         self.g_cam = np.array(rospy.get_param("~g_cam", [0.0, 9.81, 0.0]), dtype=np.float64)
 
         # per-axis measurement / process (accel) noise
+        # R = diag(sigma_pos_xyz^2), Q derived from sigma_acc_xyz via continuous white-noise model.
         self.sigma_pos_xyz = np.array(rospy.get_param("~sigma_pos_xyz", [0.1, 0.007, 0.07]), dtype=np.float64)
         self.sigma_acc_xyz = np.array(rospy.get_param("~sigma_acc_xyz", [8.0, 8.0, 6.0]), dtype=np.float64)
 
@@ -38,6 +98,8 @@ class BallKFPredictor:
         self.filtered_path = []
 
         # ------ Mahalanobis gating params ------
+        # Chi-square thresholds for 3 DoF innovations (position-only):
+        # ~11.34 ≈ 99%, ~16.27 ≈ 99.9%.
         self.meas_gate_chi2_soft = float(rospy.get_param("~meas_gate_chi2_soft", 11.34))  # 3DoF ~99%
         self.meas_gate_chi2_hard = float(rospy.get_param("~meas_gate_chi2_hard", 16.27))  # 3DoF ~99.9%
         self.meas_soft_factor_max = float(rospy.get_param("~meas_soft_factor_max", 15.0))
@@ -45,6 +107,8 @@ class BallKFPredictor:
         self.gating_warmup_updates = int(rospy.get_param("~gating_warmup_updates", 3))
 
         # ---- plane-intersection params ----
+        # "x" -> intersect YZ plane at x = x_plane_m
+        # "z" -> intersect XY plane at z = z_plane_m
         self.plane_mode = rospy.get_param("~plane_mode", "z")   # "x" | "z"
         self.x_plane_m  = float(rospy.get_param("~x_plane_m", 0.7))  # YZ plane at x = const 
         self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const 0.5 is the min reading
@@ -100,11 +164,10 @@ class BallKFPredictor:
         self.R = np.diag(self.sigma_pos_xyz**2)
         self.publish_static_plane_markers()
 
-                # ---------- CSV logging ----------
-        # Keep the user-provided path EXACTLY as given (except ~ expansion).
+        # ---------- CSV logging ----------
         # If it's relative, it will be created relative to the process CWD.
         csv_param = rospy.get_param("~csv_path", "~/Desktop/Robo_Project_ws/src/l515_tools/scripts/Predictions.csv")
-        self.csv_path = os.path.expanduser(csv_param)   # DO NOT abspath unless you want to
+        self.csv_path = os.path.expanduser(csv_param)
         self.csv_path = None #done on purpose to dont store data
         self._csv_header_written = False
 
@@ -133,6 +196,24 @@ class BallKFPredictor:
 
     # ---------- model helpers ----------
     def F_Q_gvec(self, dt):
+        """
+        Build discrete-time transition F, process covariance Q for dt,
+        and deterministic input due to gravity g_vec for constant-acceleration model.
+
+        State order: [px, py, pz, vx, vy, vz]^T
+
+        F:
+            [ I3  dt*I3 ]
+            [ 0     I3  ]
+
+        Q (per-axis white-noise acceleration q = sigma_acc^2):
+            For each axis: q * [[dt^3/3, dt^2/2],
+                                [dt^2/2, dt    ]]
+            mapped into (p, v) block for that axis.
+
+        g_vec (gravity contribution):
+            [ 0.5*g*dt^2 ; g*dt ]
+        """
         F = np.eye(6)
         F[0,3]=dt; F[1,4]=dt; F[2,5]=dt
         dt2, dt3 = dt*dt, dt*dt*dt
@@ -154,16 +235,29 @@ class BallKFPredictor:
 
     # ---------- predict / update ----------
     def predict_step(self, dt):
+        """Time-update (prediction) with gravity input."""
         F, Q, g_vec = self.F_Q_gvec(dt)
         self.x = F.dot(self.x) + g_vec
         self.P = F.dot(self.P).dot(F.T) + Q
 
     def update_step(self, z):
         """
-        Perform measurement update with Mahalanobis gating.
+        Measurement-update (correction) with Mahalanobis gating.
+
+        Args:
+            z (np.ndarray shape=(3,)): position measurement [mx,my,mz]
+
         Returns:
             accepted_meas (bool): True if measurement used, False if hard-rejected.
             d2 (float): Mahalanobis distance squared for diagnostics.
+
+        Logic:
+        - Compute innovation y = z - Hx and innovation covariance S = HPHᵀ + R.
+        - d2 = yᵀ S⁻¹ y. If large:
+            * If above hard threshold (and jump condition met), reject.
+            * Else above soft threshold, inflate R by factor to down-weight update.
+        - Compute Kalman gain K = P Hᵀ S⁻¹ and update (x,P).
+        - Publish innovation/uncertainty diagnostics on accepted updates.
         """
         # innovation
         y = z - self.H.dot(self.x)
@@ -219,11 +313,19 @@ class BallKFPredictor:
         return True, d2
     
     def ballistic_pos(self, dt):
+        """Ballistic propagation under constant gravity in camera frame."""
         p0 = self.x[0:3]; v0 = self.x[3:6]; a = self.g_cam
         return p0 + v0*dt + 0.5*a*(dt*dt)
 
     @staticmethod
     def solve_time_to_plane_1d(a, b, c, t_min=0.0, t_max=None, eps=1e-9):
+        """
+        Solve a*t^2 + b*t + c = 0 for the earliest valid root in [t_min, t_max].
+        Handles degenerate linear/constant cases and negative discriminant.
+
+        Returns:
+            t (float or None): earliest feasible intercept time.
+        """
         # earliest admissible root in [t_min, t_max]
         if abs(a) < eps:
             if abs(b) < eps:
@@ -253,23 +355,25 @@ class BallKFPredictor:
     # ---------- single inline publisher ----------
     def publish_all(self, stamp, accepted_meas: bool):
         """
-        Single publishing entrypoint. Does everything inline—no calls to other publish_* methods.
-        - Filtered point (+ optional path) only when accepted_meas is True.
-        - Prediction point and path always.
-        - Plane-hit point/time when a valid hit exists within horizon.
+        Publish all outputs using the current KF state.
+
+        Behavior:
+        - Always publish the current velocity and the lookahead predicted point/path.
+        - Publish filtered point and filtered path only when the measurement was accepted.
+        - Compute intercept with both planes, choose based on self.plane_mode, and publish hit point/time.
+        - Maintain a small history of hit points for RViz inspection.
         """
         hdr = Header(stamp=stamp, frame_id=self.frame_id)
 
-        # -1)Velocity of the ball
+        # 1)Velocity of the ball
         vel = Vector3Stamped()
         vel.header = hdr
         vel.vector.x = self.x[3]
         vel.vector.y = self.x[4]
         vel.vector.z = self.x[5]
-        #rospy.logwarn_throttle(0.0, f"Velocity at instant: (V={self.x[3]:.4f} , {self.x[4]:.4f}, {self.x[5]:.4f})")
         self.pub_current_vel.publish(vel)
 
-        # 1) Filtered (only if accepted)
+        # 2) Filtered (only if accepted)
         if accepted_meas:
             pt_f = PointStamped()
             pt_f.header = hdr
@@ -286,7 +390,7 @@ class BallKFPredictor:
                 path_f = Path(); path_f.header = hdr; path_f.poses = self.filtered_path
                 self.pub_filt_path.publish(path_f)
 
-        # 2) Prediction point (lookahead) + prediction path
+        # 3) Prediction point (lookahead) + prediction path
         pL = self.ballistic_pos(self.lookahead_s)
         pt_p = PointStamped()
         pt_p.header = hdr
@@ -304,7 +408,7 @@ class BallKFPredictor:
             path.poses.append(ps)
         self.pub_pred_path.publish(path)
 
-        # 3) Plane hits (compute both, then select by mode)
+        # 4) Plane hits (compute both, then select by mode)
         p0 = self.x[0:3]; v0 = self.x[3:6]; g = self.g_cam
 
         # YZ plane (x = const)
@@ -354,7 +458,6 @@ class BallKFPredictor:
             vel_hit.vector.y = v_hit[1]
             vel_hit.vector.z = v_hit[2]
             self.pub_pred_vel_hit.publish(vel_hit)
-            #rospy.logwarn_throttle(0.0, f"Velocity at hit: (V={v_hit[0]:.4f} , {v_hit[1]:.4f}, {v_hit[2]:.4f})")
             
 
             return t_sel, p_sel
@@ -363,7 +466,12 @@ class BallKFPredictor:
 
     # ---------- callback ----------
     def cb_meas(self, msg: PointStamped):
-
+        """
+        Handle incoming measurement:
+        - Initialize the KF on the first message.
+        - Thereafter, compute dt, run predict+update (with gating), and publish outputs.
+        - Optionally log a CSV row per update (currently disabled).
+        """
         t_cb_start = rospy.Time.now()
 
 
@@ -407,6 +515,10 @@ class BallKFPredictor:
 
     # ---------- static plane markers (unchanged except color range) ----------
     def publish_static_plane_markers(self):
+        """
+        Publish a translucent CUBE marker representing the active intercept plane.
+        Only the plane matching self.plane_mode is published (latching publisher).
+        """
         PLANE_THICKNESS = 0.005
         YZ_SIZE_Y = 4.0
         YZ_SIZE_Z = 6.0
@@ -449,6 +561,10 @@ class BallKFPredictor:
             self.pub_markers_static.publish(xy)
     
     def write_csv(self, stamp_ros, meas, accepted_meas, p_hit, t_hit):
+        """
+        Append a CSV row with timestamps, measurement, filtered state, and hit info.
+        No-ops when self.csv_path is None or empty (as configured above).
+        """
         if not self.csv_path:
             return
         stamp_iso = datetime.now().isoformat()

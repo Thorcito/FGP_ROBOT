@@ -1,4 +1,54 @@
 #!/usr/bin/env python3
+"""
+KFtoEETargetBridge (plane-interception criterion)
+
+Purpose
+-------
+- Subscribe to the plane-intersection target point and the predicted velocity-at-hit from
+  the predictor running in the CAMERA frame, plus the time-to-go (TTG) for that intercept.
+- Transform the target point from camera frame to WORLD frame using TF2.
+- Smooth a direction estimate derived from the ball's predicted velocity (EMA) to build
+  a stable end-effector (EE) orientation that "faces" the incoming ball.
+- Gate out targets that are out of the catching area or that jump too far between updates.
+- Publish an EETarget (position in WORLD + orientation quaternion + duration) for the UR10 controller.
+- Also publish auxiliary RViz markers (Point + Path) for inspection.
+
+Key Inputs (topics)
+-------------------
+~position_topic : geometry_msgs/PointStamped  (default "/ball_pred/hit_point")
+~velocity_topic : geometry_msgs/Vector3Stamped (default "/ball_pred/pred_vel_hit")
+~t_to_int_topic : std_msgs/Float32            (default "/ball_pred/hit_time_s")
+
+Frames / TF
+-----------
+~world_frame      : WORLD frame for the robot controller (default "world")
+~ee_frame         : Current EE frame to compute roll-minimizing orientation (default "ur10_model_dh_5")
+~publish_camera_tf: If True, publish a static TF for the camera (useful for sim/demo)
+~camera_parent    : Parent frame for the camera static TF (default "world")
+~camera_frame     : Camera optical frame id (default "camera_color_optical_frame")
+~camera_xyz       : Camera translation wrt parent (meters)
+~camera_quat_xyzw : Camera quaternion [x,y,z,w] wrt parent
+
+Orientation Logic
+-----------------
+- dir_sign = -1.0 means the tool's +Z is oriented toward the incoming velocity (faces the ball).
+- EMA smoothing (dir_alpha) provides a continuous direction estimate.
+- The rotation solution "_candidate_for_z" finds the closest-roll frame compared with current EE
+  orientation (also considers a 180° flip candidate).
+
+Safety / Gating
+---------------
+~min_duration_s : Minimum TTG to accept/publish (default 0.1 s)
+~max_step_m     : Max allowed step between successive WORLD targets (default 0.13 m)
+~reset_on_outside, ~reset_on_big_step : Whether to reset the EMA direction when gating triggers.
+
+Outputs
+-------
+"ee_target" : tum_ics_ur10_controller_tutorial/EETarget (position/orientation/duration in WORLD)
+"Bridge/punto" : geometry_msgs/PointStamped (WORLD target point)
+"Bridge/path"  : nav_msgs/Path (short history for RViz)
+"""
+
 import rospy, math
 from tum_ics_ur10_controller_tutorial.msg import EETarget
 from geometry_msgs.msg import PointStamped, TransformStamped, PoseStamped, Vector3Stamped
@@ -14,17 +64,20 @@ from tf2_geometry_msgs import do_transform_point
 class KFtoEETargetBridge:
     def __init__(self):
         # -------- params --------
+        # Predictor outputs (camera frame) and time-to-go (scalar)
         self.position_topic = rospy.get_param("~position_topic", "/ball_pred/hit_point")
         self.velocity_topic = rospy.get_param("~velocity_topic", "/ball_pred/pred_vel_hit")
         self.ttg_topic      = rospy.get_param("~t_to_int_topic", "/ball_pred/hit_time_s")
 
+        # Frames for final publication and roll-minimization reference
         self.world_frame    = rospy.get_param("~world_frame", "world")
         self.ee_frame       = rospy.get_param("~ee_frame", "ur10_model_dh_5")
 
+        # Basic gating
         self.min_duration   = rospy.get_param("~min_duration_s", 0.1)
         self.max_step_m     = rospy.get_param("~max_step_m", 0.13)
 
-        # Camera TF (optional)
+        # Camera TF (optional, useful for simulation / debugging)
         self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
         self.camera_parent     = rospy.get_param("~camera_parent", "world")
         self.camera_frame      = rospy.get_param("~camera_frame", "camera_color_optical_frame")
@@ -32,22 +85,23 @@ class KFtoEETargetBridge:
         self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])  # x y z w
 
         # Orientation tracking (continuous)
+        # dir_sign < 0 → "face" incoming velocity; EMA smoothing for stability
         self.vel_min_speed = float(rospy.get_param("~vel_min_speed_mps", 1.0))
         self.up_world = np.array(rospy.get_param("~up_world", [0.0, 0.0, 1.0]), dtype=np.float64)
         self.dir_sign = -1.0  # fixed: face the ball (your validated setting)
         self.dir_alpha = float(rospy.get_param("~dir_alpha", 0.5))  # EMA on direction
 
-        # Resets to avoid stale state between throws
+        # Resets to avoid stale state between throws or after gating
         self.reset_on_outside = bool(rospy.get_param("~reset_on_outside", True))
         self.reset_on_big_step = bool(rospy.get_param("~reset_on_big_step", True))
 
         # -------- state --------
-        self.pos_ema = None            # filtered direction
+        self.pos_ema = None            # EMA of direction in WORLD (unit vector)
 
         self.last_ttg = None
         self.old_x = self.old_y = self.old_z = None
         self.get_orientation = False   # start tracking only after first accepted point
-        self.pts = []
+        self.pts = []                  # short trail for RViz
 
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
@@ -67,6 +121,10 @@ class KFtoEETargetBridge:
 
     # ---------- helpers ----------
     def _publish_static_camera_tf(self):
+        """
+        Optionally publish a static transform for the camera (parent -> camera_frame).
+        Useful for simulation/demo.
+        """
         t = TransformStamped()
         t.header.stamp = rospy.Time.now()
         t.header.frame_id = self.camera_parent
@@ -83,20 +141,28 @@ class KFtoEETargetBridge:
         self.static_broadcaster.sendTransform(t)
 
     def _rotate_vec_by_tf(self, v_cam, world_frame, cam_frame):
+        """
+        Rotate a vector given in cam_frame into world_frame using TF orientation.
+        (No translation applied; only rotation via quaternion.)
+        """
         Tcw = self.buf.lookup_transform(world_frame, cam_frame, rospy.Time(0), rospy.Duration(0.05))
         q = Tcw.transform.rotation
-        qc = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
+        qc = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)  # [w, x, y, z]
         x, y, z = v_cam
+        # Quaternion-vector rotate: v' = v + 2w(q_vec × v) + 2(q_vec × (q_vec × v))
+        # Implemented in a compact form below:
         qw, qx, qy, qz = qc
         t = 2.0 * np.cross([qx, qy, qz], [x, y, z])
         v_world = [x, y, z] + qw * t + np.cross([qx, qy, qz], t)
         return np.array(v_world, dtype=np.float64)
 
     def _unit(self, v):
+        """Safe unit-vector helper."""
         n = float(np.linalg.norm(v))
         return v / (n + 1e-12)
 
     def _R_from_quat_xyzw(self, q):
+        """Convert quaternion [x,y,z,w] to rotation matrix R (3x3)."""
         x, y, z, w = q
         xx, yy, zz = x*x, y*y, z*z
         xy, xz, yz = x*y, x*z, y*z
@@ -108,6 +174,7 @@ class KFtoEETargetBridge:
         ], dtype=np.float64)
 
     def _quat_from_R(self, R):
+        """Convert rotation matrix to a normalized quaternion [x,y,z,w]."""
         tr = np.trace(R)
         if tr > 0:
             S = math.sqrt(tr + 1.0) * 2.0
@@ -131,6 +198,11 @@ class KFtoEETargetBridge:
         return q
 
     def _rot_about_axis_matrix(self, k, phi): #Rodriguey formula
+        """
+        Rodrigues' rotation formula for an axis-angle rotation.
+        k : axis (3,), any non-zero vector
+        phi : rotation angle (rad)
+        """
         k = self._unit(k)
         K = np.array([[0,-k[2],k[1]],[k[2],0,-k[0]],[-k[1],k[0],0]], dtype=np.float64)
         I = np.eye(3)
@@ -138,17 +210,33 @@ class KFtoEETargetBridge:
 
     # Fixed-axis (+Z) frame builder with roll stabilization vs up_world
     def _frame_from_dir_with_up_z(self, dir_world, up_world):
+        """
+        Construct a tool frame whose +Z axis follows 'dir_world', with roll chosen
+        using 'up_world' as a reference to avoid arbitrary spins.
+
+        Returns:
+            R (3x3): rotation matrix whose columns are the tool's axes in WORLD.
+                     Column 2 (index=2) corresponds to +Z of the tool.
+        """
         z = self._unit(dir_world)
         up = self._unit(up_world)
+        # If nearly parallel, pick a fixed fallback to avoid degeneracy.
         if abs(np.dot(z, up)) > 0.98:
             up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        x = self._unit(np.cross(up, z))  # lateral
+        x = self._unit(np.cross(up, z))  # lateral axis
         y = np.cross(z, x)
-        R = np.column_stack([x, y, z])   # columns are world axes of tool
+        R = np.column_stack([x, y, z])   # columns are tool axes in WORLD
         return R  # axis_idx for +Z is 2
 
     # Choose roll that minimizes rotation from current orientation; also try 180° roll
     def _candidate_for_z(self, dir_world, up_world, q_now_xyzw):
+        """
+        Given desired +Z direction and current EE orientation, find the tool frame
+        with minimal roll change. Also consider a 180° roll flip and choose the closer.
+
+        Returns:
+            (q_best_xyzw, angle_to_current)
+        """
         R_now = self._R_from_quat_xyzw(q_now_xyzw)
         R_base = self._frame_from_dir_with_up_z(dir_world, up_world)
 
@@ -180,21 +268,28 @@ class KFtoEETargetBridge:
 
         def quat_angle(qA, qB):
             dot = float(np.dot(qA, qB))
-            dot = abs(max(min(dot, 1.0), -1.0))
+            dot = abs(max(min(dot, 1.0), -1.0))  # clamp for acos safety
             return 2.0 * math.acos(dot)
 
         return (q1, quat_angle(q_now, q1)) if quat_angle(q_now, q1) <= quat_angle(q_now, q2) else (q2, quat_angle(q_now, q2))
 
     def _reset_orientation_filter(self, why=""):
+        """Clear the EMA direction; helpful when exiting region or after a big step."""
         self.pos_ema = None
         if why:
             rospy.logerr(f"[bridge] reset orientation ({why})")
 
     # ---------- callbacks ----------
     def on_ttg(self, msg: Float32):
+        """Cache latest time-to-go to the intercept (seconds)."""
         self.last_ttg = float(msg.data)
 
     def on_vhit(self, msg: Vector3Stamped):
+        """
+        Consume predicted velocity at the hit point (camera frame). Once orientation
+        tracking is enabled, rotate velocity to WORLD, gate its magnitude, then update
+        the smoothed direction (EMA). Direction sign is fixed to face the ball.
+        """
         if not self.get_orientation:
             return
 
@@ -216,6 +311,14 @@ class KFtoEETargetBridge:
         self.pos_ema = self._unit((1.0 - self.dir_alpha) * self.pos_ema + self.dir_alpha * p_raw)
 
     def on_point(self, p_cam: PointStamped):
+        """
+        Handle an intercept point (camera frame):
+        - Require a valid, recent TTG and minimum duration.
+        - Transform the point into WORLD.
+        - Apply workspace gate and step-size gate to reject implausible targets.
+        - Build/choose an EE orientation (roll-minimizing around +Z) using EMA direction if available.
+        - Publish the EETarget and auxiliary RViz messages.
+        """
         t_cb_start = rospy.Time.now()
 
         if self.last_ttg is None:
@@ -238,7 +341,7 @@ class KFtoEETargetBridge:
             rospy.logwarn_throttle(0.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
             return
 
-        # Catching area gate
+        # Catching area gate (WORLD coordinates)
         if not (-0.14 <= p_world.y <= 0.46 and 0.52 <= p_world.z <= 1.12):
             rospy.logerr_throttle(0.0, f"[bridge] outside catching area; Tgo={dur:.3f}")
             self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
@@ -247,7 +350,7 @@ class KFtoEETargetBridge:
                 self._reset_orientation_filter("outside area")
             return
 
-        # Distance gate
+        # Distance gate (reject large jumps between successive accepted targets)
         if self.old_x is not None:
             dx = p_world.x - self.old_x
             dy = p_world.y - self.old_y
@@ -260,7 +363,7 @@ class KFtoEETargetBridge:
                     self._reset_orientation_filter(f"big step {step:.3f} m")
                 return
 
-        # Current EE orientation (for logging / pass-through if needed)
+        # Current EE orientation (WORLD), used to minimize roll change
         try:
             T_w_ee = self.buf.lookup_transform(self.world_frame, self.ee_frame,
                                                rospy.Time(0), rospy.Duration(0.02))
@@ -270,7 +373,7 @@ class KFtoEETargetBridge:
             rospy.logwarn_throttle(1.0, f"[bridge] EE TF lookup failed ({self.ee_frame}→{self.world_frame}): {e}")
             return
 
-        # Choose orientation for this publish
+        # Choose orientation for this publish (EMA-based if available, else pass through current EE)
         if self.pos_ema is not None:
             q_tgt_xyzw, _ = self._candidate_for_z(self.pos_ema, self.up_world, q_ee)
             use_q = q_tgt_xyzw
@@ -281,7 +384,7 @@ class KFtoEETargetBridge:
         latency_proc = (t_pub - t_cb_start).to_sec()
         rospy.loginfo(f"Latency: ({latency_proc}) s")
 
-        # Publish point & short trail (kept for RViz)
+        # Publish point & short trail (WORLD, for RViz)
         stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
 
         pto_w = PointStamped()
@@ -301,7 +404,7 @@ class KFtoEETargetBridge:
         path_msg.poses = list(self.pts)
         self.pub_path.publish(path_msg)
 
-        # Publish EETarget
+        # Publish EETarget (final command for controller)
         msg = EETarget()
         msg.ee_target.position.x = p_world.x
         msg.ee_target.position.y = p_world.y
@@ -313,7 +416,7 @@ class KFtoEETargetBridge:
         msg.duration = dur
         self.pub.publish(msg)
 
-        # Update state & single critical log
+        # Update state & enable orientation tracking
         self.old_x, self.old_y, self.old_z = p_world.x, p_world.y, p_world.z
         self.get_orientation = True
 

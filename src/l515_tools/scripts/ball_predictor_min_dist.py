@@ -1,4 +1,47 @@
 #!/usr/bin/env python3
+"""
+BallKFPredictor_minDist (minimum-distance criterion – prediction-only)
+
+Purpose
+-------
+- Consume 3D ball measurements in the camera optical frame.
+- Run a constant-acceleration Kalman Filter (state: position + velocity).
+- Apply Mahalanobis gating (soft/hard) to robustly handle noisy measurements.
+- Predict ballistic motion under gravity expressed in the *camera* frame.
+- Publish:
+    /ball_pred/point_filt  : geometry_msgs/PointStamped (filtered position)
+    /ball_pred/current_vel : geometry_msgs/Vector3Stamped (KF velocity)
+    /ball_pred/pred_point  : geometry_msgs/PointStamped (lookahead predicted point)
+    /ball_pred/pred_path   : nav_msgs/Path (future ballistic samples)
+    /ball_pred/path_filt   : nav_msgs/Path (filtered history; optional)
+  plus PlotJuggler-friendly diagnostics for innovations/uncertainties.
+
+Notes
+-----
+- This node purposely does NOT compute a plane intercept; it only produces
+  filtered states and ballistic predictions. The downstream "bridge_min_distance"
+  node will use these outputs to optimize the minimum-distance EE target.
+- All frames stay in the *camera* frame. If you need world/base, transform downstream.
+
+Key params (~private)
+---------------------
+~frame_id                : output frame id (default "camera_color_optical_frame")
+~input_topic             : input measurement topic (default "/ball_meas/point")
+~g_cam                   : gravity in camera frame (default [0, 9.81, 0])
+~sigma_pos_xyz           : per-axis measurement std dev [m]
+~sigma_acc_xyz           : per-axis process (acceleration) std dev [m/s^2]
+~init_pos_std_m          : initial position std dev [m]
+~init_vel_std_mps        : initial velocity std dev [m/s]
+~lookahead_s             : single predicted point horizon [s]
+~pred_horizon_s          : total prediction path horizon [s]
+~pred_dt_s               : sample step for prediction path [s]
+~min_dt_s, ~max_dt_s     : clamp dt between updates
+~keep_filtered_path      : publish filtered path if True
+~filtered_path_max       : max poses stored for filtered path
+~meas_gate_*             : gating thresholds (soft/hard), warmup, etc.
+~csv_path                : CSV path (disabled here on purpose)
+"""
+
 import rospy, numpy as np, os, csv
 from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from nav_msgs.msg import Path
@@ -15,6 +58,7 @@ class BallKFPredictor_minDist:
         self.g_cam = np.array(rospy.get_param("~g_cam", [0.0, 9.81, 0.0]), dtype=np.float64)
 
         # per-axis measurement / process (accel) noise
+        # R = diag(sigma_pos_xyz^2); Q derived from sigma_acc_xyz via white-noise accel model
         self.sigma_pos_xyz = np.array(rospy.get_param("~sigma_pos_xyz", [0.1, 0.007, 0.07]), dtype=np.float64)
         self.sigma_acc_xyz = np.array(rospy.get_param("~sigma_acc_xyz", [8.0, 8.0, 6.0]), dtype=np.float64)
 
@@ -36,6 +80,7 @@ class BallKFPredictor_minDist:
         self.filtered_path = []
 
         # ------ Mahalanobis gating params ------
+        # 3 DoF chi-square thresholds: ~11.34 ≈ 99%, ~16.27 ≈ 99.9%
         self.meas_gate_chi2_soft = float(rospy.get_param("~meas_gate_chi2_soft", 11.34))  # 3DoF ~99%
         self.meas_gate_chi2_hard = float(rospy.get_param("~meas_gate_chi2_hard", 16.27))  # 3DoF ~99.9%
         self.meas_soft_factor_max = float(rospy.get_param("~meas_soft_factor_max", 15.0))
@@ -82,7 +127,7 @@ class BallKFPredictor_minDist:
                       self.frame_id, self.g_cam.tolist(), self.lookahead_s,
                       self.pred_horizon_s, 1.0/self.pred_dt_s)
 
-        # prebuild constant H and R
+        # prebuild constant H and R for position-only measurement model
         self.H = np.zeros((3,6)); self.H[0,0]=self.H[1,1]=self.H[2,2]=1.0
         self.R = np.diag(self.sigma_pos_xyz**2)
 
@@ -93,6 +138,7 @@ class BallKFPredictor_minDist:
         self.csv_path = None  # disabled on purpose
         self._csv_header_written = False
 
+        # Log where we'd write (useful when enabling CSV later)
         try:
             cwd_now = os.getcwd()
         except Exception:
@@ -112,6 +158,23 @@ class BallKFPredictor_minDist:
 
     # ---------- model helpers ----------
     def F_Q_gvec(self, dt):
+        """
+        Build discrete-time transition F, process covariance Q, and gravity input g_vec
+        for a constant-acceleration model with per-axis white-noise acceleration.
+
+        State: x = [px, py, pz, vx, vy, vz]^T
+
+        F:
+            [ I3  dt*I3 ]
+            [ 0     I3  ]
+
+        Q per axis (q = sigma_acc^2):
+            q * [[dt^3/3, dt^2/2],
+                 [dt^2/2, dt    ]]
+
+        g_vec (gravity contribution):
+            [ 0.5*g*dt^2 ; g*dt ]
+        """
         F = np.eye(6)
         F[0,3]=dt; F[1,4]=dt; F[2,5]=dt
         dt2, dt3 = dt*dt, dt*dt*dt
@@ -132,11 +195,18 @@ class BallKFPredictor_minDist:
 
     # ---------- predict / update ----------
     def predict_step(self, dt):
+        """Time-update with gravity input."""
         F, Q, g_vec = self.F_Q_gvec(dt)
         self.x = F.dot(self.x) + g_vec
         self.P = F.dot(self.P).dot(F.T) + Q
 
     def update_step(self, z):
+        """
+        Measurement-update with Mahalanobis gating.
+
+        Returns:
+            accepted (bool), d2 (float): whether measurement accepted and its innovation distance^2.
+        """
         # innovation
         y = z - self.H.dot(self.x)
         S = self.H.dot(self.P).dot(self.H.T) + self.R
@@ -190,11 +260,16 @@ class BallKFPredictor_minDist:
 
     # ---------- kinematics ----------
     def ballistic_pos(self, dt):
+        """Ballistic propagation under constant gravity in camera frame."""
         p0 = self.x[0:3]; v0 = self.x[3:6]; a = self.g_cam
         return p0 + v0*dt + 0.5*a*(dt*dt)
 
     # ---------- publishers ----------
     def _publish_overlays(self, hdr, accepted_meas: bool):
+        """
+        Publish the filtered point/path (if accepted), current velocity,
+        the lookahead predicted point, and a sampled prediction path.
+        """
         # Filtered point & path
         if accepted_meas:
             pt_f = PointStamped(); pt_f.header = hdr
@@ -222,7 +297,7 @@ class BallKFPredictor_minDist:
         pt_p.point.x, pt_p.point.y, pt_p.point.z = float(pL[0]), float(pL[1]), float(pL[2])
         self.pub_pred_pt.publish(pt_p)
 
-        # Predicted path
+        # Predicted path (sampled along horizon)
         path = Path(); path.header = hdr
         n = max(2, int(self.pred_horizon_s / self.pred_dt_s))
         for i in range(n+1):
@@ -236,6 +311,11 @@ class BallKFPredictor_minDist:
 
     # ---------- callback ----------
     def cb_meas(self, msg: PointStamped):
+        """
+        Handle incoming measurement:
+        - Initialize on first message.
+        - Thereafter: compute dt, run predict+update (with gating), then publish overlays.
+        """
         if msg.header.frame_id and msg.header.frame_id != self.frame_id:
             rospy.logwarn_throttle(1.0, "Incoming frame %s != %s, treating as camera frame",
                                    msg.header.frame_id, self.frame_id)
@@ -272,6 +352,10 @@ class BallKFPredictor_minDist:
 
     # ---------- CSV (optional, disabled) ----------
     def write_csv(self, stamp_ros, meas, accepted_meas, p_hit, t_hit):
+        """
+        Append a CSV row with timestamps, measurement, filtered state, and (optionally) hit info.
+        No-op when self.csv_path is None (default here).
+        """
         if not self.csv_path:
             return
         stamp_iso = datetime.now().isoformat()

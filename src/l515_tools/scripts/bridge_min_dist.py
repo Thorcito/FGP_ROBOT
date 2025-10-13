@@ -1,4 +1,69 @@
 #!/usr/bin/env python3
+"""
+KFtoEETargetBridgeMinDist (minimum-distance criterion)
+
+Purpose
+-------
+- Subscribe to synchronized (exact time) filtered ball position and current velocity,
+  both in the camera frame, then transform/compute targets in the WORLD frame.
+- Build a continuous end-effector (EE) orientation that faces the incoming ball using
+  an EMA (exponential moving average) of the predicted velocity direction.
+- Solve two minimum-distance targeting strategies:
+    1) Analytic "minimize_time" via stationary points of d^2(t) (cubic roots in [0,1]s).
+    2) Discrete "minimize_distance" over a sampled future trajectory (uniform time grid).
+- Publish:
+    - A *primary* EETarget command using the discrete optimum (Optimization 2).
+    - WORLD-space visualization of both optima (Point + short Path trails).
+- Optionally publish a static camera TF if one is not provided elsewhere (for sim/demo).
+
+Inputs (topics)
+---------------
+~position_topic : geometry_msgs/PointStamped   (default "/ball_pred/point_filt")
+~velocity_topic : geometry_msgs/Vector3Stamped (default "/ball_pred/current_vel")
+  NOTE: These are synchronized with message_filters.TimeSynchronizer (exact time).
+
+Frames / TF
+-----------
+~world_frame      : World frame for control (default "world")
+~ee_frame         : Current end-effector frame (default "ur10_model_dh_5")
+~publish_camera_tf: If True, publish a static transform for the camera (for sim)
+~camera_parent    : Parent of camera frame (default "world")
+~camera_frame     : Camera optical frame id (default "camera_color_optical_frame")
+~camera_xyz       : Camera translation wrt parent
+~camera_quat_xyzw : Camera orientation wrt parent (x,y,z,w)
+
+Orientation Logic
+-----------------
+- Rotate ball velocity (camera→world), require a minimum speed (vel_min_speed).
+- Fixed dir_sign = -1.0 so the tool +Z faces the incoming ball.
+- EMA smoothing (dir_alpha) provides a stable direction.
+- "_candidate_for_z" chooses between the minimal-roll solution and a 180°-roll flip,
+  selecting the one closest to the current EE orientation.
+
+Targeting
+---------
+- Optimization 1 (analytic):
+    * distance_squared(pe, p0, v0, t, g) := || pe - (p0 + v0 t + 1/2 g t^2) ||^2
+    * derivative is cubic; roots in [0,1] are candidates, plus endpoints {0,1}.
+    * Minimizes d^2(t) and returns (t*, d^2(t*)).
+- Optimization 2 (discrete sampling):
+    * Sample future trajectory for t ∈ [0, t_total] uniformly.
+    * Evaluate squared distances to pe and choose argmin.
+
+Publishing
+----------
+- If Optimization 1 yields t_star != 0 and f_star <= 0.1, publish:
+    * "Bridge_minDist/punto" + "Bridge_minDist/path" for p_star,
+    * "Bridge_minDist/punto_op2" + "Bridge_minDist/path_op2" for p_desired_opt2,
+    * EETarget at the *Optimization 2* point/time (matching existing behavior).
+- All topic names, frames, parameters, and logic are left untouched.
+
+Notes
+-----
+- Gravity is expressed in WORLD: g_world = [0, 0, -9.81] (default).
+- ExactTime sync is used (TimeSynchronizer), so both inputs must have identical stamps.
+"""
+
 import rospy, math, time
 from tum_ics_ur10_controller_tutorial.msg import EETarget
 from geometry_msgs.msg import PointStamped, TransformStamped, PoseStamped, Vector3Stamped
@@ -39,8 +104,8 @@ class KFtoEETargetBridgeMinDist:
         # -------- state --------
         self.pos_ema = None
         self.old_x = self.old_y = self.old_z = None
-        self.pts = []
-        self.pts_2 = []
+        self.pts = []   # trail for Optimization 1 visualization
+        self.pts_2 = [] # trail for Optimization 2 visualization
 
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
@@ -56,6 +121,7 @@ class KFtoEETargetBridgeMinDist:
         self.pub_path_op2  = rospy.Publisher("Bridge_minDist/path_op2", Path, queue_size=10)
 
         # -------- exact time sync subscribers --------
+        # Use exact timestamps to pair position and velocity from the predictor.
         pos_sub = message_filters.Subscriber(self.position_topic, PointStamped)
         vel_sub = message_filters.Subscriber(self.velocity_topic, Vector3Stamped)
         ts = message_filters.TimeSynchronizer([pos_sub, vel_sub], queue_size=25)
@@ -65,6 +131,7 @@ class KFtoEETargetBridgeMinDist:
 
     # ---------- helpers ----------
     def _publish_static_camera_tf(self):
+        """Optionally publish a static transform for the camera (parent -> camera_frame)."""
         t = TransformStamped()
         t.header.stamp = rospy.Time.now()
         t.header.frame_id = self.camera_parent
@@ -81,10 +148,15 @@ class KFtoEETargetBridgeMinDist:
         self.static_broadcaster.sendTransform(t)
 
     def _rotate_vec_by_tf(self, v_cam, world_frame, cam_frame):
+        """
+        Rotate a vector given in cam_frame into world_frame using the TF orientation.
+        Only orientation is applied; translation is irrelevant for vectors.
+        """
         Tcw = self.buf.lookup_transform(world_frame, cam_frame, rospy.Time(0), rospy.Duration(0.05))
         q = Tcw.transform.rotation
         qc = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)  # [w,x,y,z]
         x, y, z = v_cam
+        # Standard quaternion-vector rotation: v' = v + 2w(q_vec×v) + 2(q_vec×(q_vec×v))
         qw, qx, qy, qz = qc
         t = 2.0 * np.cross([qx, qy, qz], [x, y, z])
         v_world = [x, y, z] + qw * t + np.cross([qx, qy, qz], t)
@@ -92,11 +164,13 @@ class KFtoEETargetBridgeMinDist:
 
     @staticmethod
     def _unit(v):
+        """Safe unit vector helper (avoids division by zero)."""
         n = float(np.linalg.norm(v))
         return v / (n + 1e-12)
 
     # --- orientation helpers (unchanged) ---
     def _R_from_quat_xyzw(self, q):
+        """Quaternion [x,y,z,w] → rotation matrix."""
         x, y, z, w = q
         xx, yy, zz = x*x, y*y, z*z
         xy, xz, yz = x*y, x*z, y*z
@@ -108,6 +182,7 @@ class KFtoEETargetBridgeMinDist:
         ], dtype=np.float64)
 
     def _quat_from_R(self, R):
+        """Rotation matrix → normalized quaternion [x,y,z,w]."""
         tr = np.trace(R)
         if tr > 0:
             S = math.sqrt(tr + 1.0) * 2.0
@@ -131,12 +206,17 @@ class KFtoEETargetBridgeMinDist:
         return q
 
     def _rot_about_axis_matrix(self, k, phi):
+        """Rodrigues' rotation formula for rotation about axis k by angle phi."""
         k = self._unit(k)
         K = np.array([[0,-k[2],k[1]],[k[2],0,-k[0]],[-k[1],k[0],0]], dtype=np.float64)
         I = np.eye(3)
         return I*math.cos(phi) + math.sin(phi)*K + (1-math.cos(phi))*np.outer(k,k)
 
     def _frame_from_dir_with_up_z(self, dir_world, up_world):
+        """
+        Build a tool frame with +Z aligned to dir_world and roll stabilized by up_world.
+        Returns R whose columns are the tool axes in WORLD (col 2 is +Z).
+        """
         z = self._unit(dir_world)
         up = self._unit(up_world)
         if abs(np.dot(z, up)) > 0.98:
@@ -146,6 +226,10 @@ class KFtoEETargetBridgeMinDist:
         return np.column_stack([x, y, z])
 
     def _candidate_for_z(self, dir_world, up_world, q_now_xyzw):
+        """
+        Choose between minimal-roll and 180°-roll solutions, relative to current EE pose.
+        Returns (best_quaternion_xyzw, angle_to_current).
+        """
         R_now = self._R_from_quat_xyzw(q_now_xyzw)
         R_base = self._frame_from_dir_with_up_z(dir_world, up_world)
         z = R_base[:, 2]
@@ -174,11 +258,17 @@ class KFtoEETargetBridgeMinDist:
         return (q1, quat_angle(q_now, q1)) if quat_angle(q_now, q1) <= quat_angle(q_now, q2) else (q2, quat_angle(q_now, q2))
     
     def distance_squared(self, pos_robot, p0_ball, v0_ball, t, g):
+        """Squared distance between robot position and ball position at time t."""
         ball_tray = p0_ball + v0_ball*t + 0.5*g*t*t
         dist = pos_robot - ball_tray
         return float(dist@dist)
     
     def derivate_distance_squared(self, pos_robot, p0_ball, v0_ball, g):
+        """
+        Solve d/dt || pe - (p0 + v0 t + 1/2 g t^2) ||^2 = 0
+        => cubic A t^3 + B t^2 + C t + D = 0 (coefficients below).
+        Returns complex roots; caller filters real roots in [t_min, t_max].
+        """
         #Given the equation At3+Bt2+Ct+D=0
         A = 0.5*(g@g) #0.5g²*t³
         B = -1.5*g@v0_ball #-1.5*g*v*t²
@@ -190,6 +280,10 @@ class KFtoEETargetBridgeMinDist:
         return roots
     
     def future_trajectories(self, p0_ball, v0_ball, g, t_total=1.0, n_points=10):
+        """
+        Sample the future ballistic trajectory at n_points over [0, t_total].
+        Returns (times, trajectory_points[N,3]).
+        """
         # Generate evenly spaced time steps from 0 to t_total
         t = np.linspace(0, t_total, n_points)
         t_col = t[:, None]                                 
@@ -197,6 +291,10 @@ class KFtoEETargetBridgeMinDist:
         return t, traj
     
     def minimize_distance(self, pos_robot, trajectories, times):
+        """
+        Discrete argmin over sampled positions: choose index with minimum squared distance.
+        Returns (time, closest_point[3]).
+        """
         pos_robot = np.asarray(pos_robot).reshape(1, 3)
         trajectories = np.asarray(trajectories)
         diff = trajectories - pos_robot                     
@@ -208,6 +306,10 @@ class KFtoEETargetBridgeMinDist:
         return time, closet_point
     
     def minimize_time(self, pos_robot, p0_ball, v0_ball, g):
+        """
+        Analytic candidate times from cubic roots (and endpoints) over [0,1]s.
+        Returns (best_time, best_distance_sq).
+        """
         #set minimun and maximun times to solve
         t_min = 0.0
         t_max = 1.0
@@ -225,6 +327,14 @@ class KFtoEETargetBridgeMinDist:
     
     # ---------- paired callback ----------
     def on_pair(self, p_cam: PointStamped, v_cam: Vector3Stamped):
+        """
+        Exact-time synchronized callback with filtered position and current velocity.
+        - Rotate velocity cam→world; require minimal speed.
+        - Update EMA direction for orientation.
+        - Transform filtered position cam→world.
+        - Compute Optimization 1 (analytic) and 2 (discrete sampling).
+        - Publish RViz markers for both; send EETarget using Optimization 2 result.
+        """
         cam_frame = self.camera_frame
         try:
             velocity = np.array([v_cam.vector.x, v_cam.vector.y, v_cam.vector.z], dtype=np.float64)
@@ -255,7 +365,7 @@ class KFtoEETargetBridgeMinDist:
             rospy.logwarn_throttle(1.0, f"[bridge_minDist] EE TF lookup failed ({self.ee_frame}→{self.world_frame}): {e}")
             return
         
-        # Transform camera → world
+        # Transform camera → world for filtered point
         try:
             Tcw = self.buf.lookup_transform(self.world_frame, cam_frame,
                                             rospy.Time(0), rospy.Duration(0.05))
@@ -266,13 +376,12 @@ class KFtoEETargetBridgeMinDist:
             rospy.logwarn_throttle(0.0, f"[bridge] TF transform failed ({cam_frame}→{self.world_frame}): {e}")
             return
         
-        #Optimization 1
+        # Optimization 1 (analytic)
         vel_no_q = np.array([v_world[0], v_world[1], v_world[2]], dtype=np.float64)
         t_star, f_star = self.minimize_time(pe, point, vel_no_q, self.g_world)
-        
         p_star = point + vel_no_q*t_star + 0.5*self.g_world*(t_star*t_star)
     
-        #Optimization 2
+        # Optimization 2 (discrete sampling)
         times_opt2, poss_opt2 = self.future_trajectories(point, vel_no_q, self.g_world, t_total=1, n_points=10)
         t_desired_opt2, p_desired_opt2 = self.minimize_distance(pe, poss_opt2, times_opt2)
 
@@ -284,16 +393,18 @@ class KFtoEETargetBridgeMinDist:
         else:
             rospy.logerr(f"[bridge] No valid root found T: {t_star} " )
 
-
-        # Choose orientation for this publish
+        # Choose orientation for this publish (EMA-based if available; else current EE)
         if self.pos_ema is not None:
             q_tgt_xyzw, _ = self._candidate_for_z(self.pos_ema, self.up_world, q_ee)
             use_q = q_tgt_xyzw
         else:
             use_q = q_ee
-        # Publish EETarget
+
+        # Publish only if analytic solution is non-zero and close enough (f_star threshold)
         if t_star != 0 and f_star <= 0.1:
             stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
+
+            # Publish Optimization 1 point & short trail
             pto_w = PointStamped()
             pto_w.header.stamp = stamp
             pto_w.header.frame_id = self.world_frame
@@ -311,7 +422,7 @@ class KFtoEETargetBridgeMinDist:
             path_msg.poses = list(self.pts)
             self.pub_path.publish(path_msg)
 
-            #Optimization 2
+            # Publish Optimization 2 point & short trail (for comparison)
             stamp = p_cam.header.stamp if p_cam.header.stamp.to_sec() > 0 else rospy.Time.now()
             pto_op2 = PointStamped()
             pto_op2.header.stamp = stamp
@@ -330,6 +441,7 @@ class KFtoEETargetBridgeMinDist:
             path_msg_op2.poses = list(self.pts_2)
             self.pub_path_op2.publish(path_msg_op2)
 
+            # Controller command: EETarget uses Optimization 2 result (as in your code)
             msg = EETarget()
             msg.ee_target.position.x = p_desired_opt2[0]
             msg.ee_target.position.y = p_desired_opt2[1]
@@ -341,7 +453,7 @@ class KFtoEETargetBridgeMinDist:
             msg.duration = t_desired_opt2
             self.pub.publish(msg)
 
-        # Update state & single critical log
+        # Update state (last published Optimization 1 point; used as previous point)
         self.old_x, self.old_y, self.old_z = p_star[0], p_star[1], p_star[2]
 
 if __name__ == "__main__":
