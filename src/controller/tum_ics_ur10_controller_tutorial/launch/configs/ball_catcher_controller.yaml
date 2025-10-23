@@ -7,7 +7,7 @@ ball_catcher_controller:
     #derivative
     gains_d: [79, 79, 72, 32, 7, 25] # [79, 79, 72, 64, 11, 50]
     # Desired position
-    goal: [0, -1.578, -1.578, 0, 1.578, 0]         #goal: [0, -1.578, -1.578, 0, 1.578, 0]
+    goal: [0, -1.578, -1.578, 0.7854, 1.578, 0]         #goal: [0, -1.578, -1.578, 0, 1.578, 0] 
     # Desired duration
     duration: 10.0
   
