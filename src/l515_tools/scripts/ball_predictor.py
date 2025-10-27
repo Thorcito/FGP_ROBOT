@@ -111,7 +111,7 @@ class BallKFPredictor:
         # "z" -> intersect XY plane at z = z_plane_m
         self.plane_mode = rospy.get_param("~plane_mode", "z")   # "x" | "z"
         self.x_plane_m  = float(rospy.get_param("~x_plane_m", 0.7))  # YZ plane at x = const 
-        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.7))  # XY plane at z = const 0.5 is the min reading
+        self.z_plane_m  = float(rospy.get_param("~z_plane_m", 0.9))  # XY plane at z = const 0.5 is the min reading
         self.exp_tag = float(rospy.get_param("~exp_tag", 10))
         self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 1.3))
 

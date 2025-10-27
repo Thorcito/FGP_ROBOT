@@ -81,8 +81,9 @@ class KFtoEETargetBridge:
         self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
         self.camera_parent     = rospy.get_param("~camera_parent", "world")
         self.camera_frame      = rospy.get_param("~camera_frame", "camera_color_optical_frame")
-        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.05, 0.0, 1.0])
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [-0.155, 0.0, -0.45]) #maybe -0.4 minus the 4.5mm of the lidar from glass
         self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])  # x y z w
+        self.rot_angle = rospy.get_param("rot_angle", 64)
 
         # Orientation tracking (continuous)
         # dir_sign < 0 → "face" incoming velocity; EMA smoothing for stability
@@ -132,7 +133,12 @@ class KFtoEETargetBridge:
         t.transform.translation.x = float(self.cam_xyz[0])
         t.transform.translation.y = float(self.cam_xyz[1])
         t.transform.translation.z = float(self.cam_xyz[2])
-        qx, qy, qz, qw = self.cam_quat_xyzw
+        q1x, q1y, q1z, q1w = self.cam_quat_xyzw
+        q2x, q2y, q2z, q2w = np.array([np.sin(np.radians(self.rot_angle)/2), 0, 0 , np.cos(np.radians(self.rot_angle)/2)])
+        qx = q1w*q2x + q1x*q2w + q1y*q2z - q1z*q2y
+        qy = q1w*q2y - q1x*q2z + q1y*q2w + q1z*q2x
+        qz = q1w*q2z + q1x*q2y - q1y*q2x + q1z*q2w
+        qw = q1w*q2w - q1x*q2x - q1y*q2y - q1z*q2z
         t.transform.rotation.x = float(qx)
         t.transform.rotation.y = float(qy)
         t.transform.rotation.z = float(qz)

@@ -90,7 +90,7 @@ class BallTrackerSync:
         # HSV segmentation & morphology ops
         # ---------------------------------
         # Fixed thresholds are assumed tuned for your ball color and lighting.
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 20,  40]), dtype=np.uint8)
+        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 55,  40]), dtype=np.uint8)
         self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [170, 255, 255]), dtype=np.uint8)
         self.blur_ksize = int(rospy.get_param("~blur", 1))   
         self.open_it    = int(rospy.get_param("~open", 6))
@@ -135,7 +135,7 @@ class BallTrackerSync:
         # Subscribers
         # ---------------------------
         # CameraInfo provides intrinsics (K) and authoritative frame_id.
-        rospy.Subscriber(self.cam_info_topic, CameraInfo, self.caminfo_cb, queue_size=1)\.
+        rospy.Subscriber(self.cam_info_topic, CameraInfo, self.caminfo_cb, queue_size=1)
 
         # Use message_filters to approximately synchronize RGB and Depth.
         self.sub_rgb   = Subscriber(self.rgb_topic, Image)
