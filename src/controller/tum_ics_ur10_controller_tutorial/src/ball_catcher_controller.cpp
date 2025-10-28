@@ -187,6 +187,7 @@ namespace tum_ics_ur_robot_lli
 
       // Requested T (duration) may come from Tgo; stretch if needed
       const double T_req = std::max(1e-6, duration);
+      /*
       cs_spline_duration_ = std::max({T_req, T_min_angle, T_min_pos});
       if (cs_spline_duration_ > T_req + 1e-6) {
         ROS_ERROR_STREAM("Stretching T: req=" << T_req
@@ -194,7 +195,9 @@ namespace tum_ics_ur_robot_lli
                         << " (T_min_angle=" << T_min_angle
                         << ", T_min_pos=" << T_min_pos << ")");
       }
+      */
       duration_ = 0.0;
+      cs_spline_duration_ = T_req;
       start_interpolation = true;
     }
 
