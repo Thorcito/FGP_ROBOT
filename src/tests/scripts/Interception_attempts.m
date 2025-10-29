@@ -4,8 +4,8 @@
 clc; clear; close all;
 
 % ---------- CONFIG ----------
-logFile = 'tiro6_log_pi.txt';       % input log file
-outCsv  = 'pi_tiro6_results.csv';  % output CSV file
+logFile = 'min_1_tiro2.txt';       % input log file
+outCsv  = 'min_atmp1.csv';  % output CSV file
 % ----------------------------
 
 % Open file
@@ -68,22 +68,21 @@ figure;
 yyaxis left
 plot(t, T.Error_mm, 'b', 'LineStyle', '--', 'LineWidth', 1.5);
 ylabel('Position Error (mm)');
-yline(10, '--k', 'Threshold (mm)');
 yyaxis right
 plot(t, T.Angle_deg, 'r', 'LineWidth', 1.5);
 ylabel('Orientation Error (°)');
 
 
 %yline(15, '--k', 'Threshold (°)');
-xline(341, '--k', 'Threshold (t)');
+xline(250, '--k', 'Threshold (t)');
 
 xlabel('Time to Interception (ms)');
 title('End-Effector Error Convergence During Interception');
 grid on;
-legend('Position Error','Orientation Error','Thresholds');
+legend('Position Error','Orientation Error','Threshold');
 
 % Save to CSV
-writetable(T, outCsv);fprintf('✅ Se extrajeron %d intentos.\n', height(T));fprintf('📄 Archivo CSV guardado en: %s\n', outCsv);
+%writetable(T, outCsv);fprintf('✅ Se extrajeron %d intentos.\n', height(T));fprintf('📄 Archivo CSV guardado en: %s\n', outCsv);
 
 % Optional: show summary
 fprintf('\nResumen:\n');
