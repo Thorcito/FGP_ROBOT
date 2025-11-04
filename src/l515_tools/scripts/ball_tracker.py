@@ -270,7 +270,7 @@ class BallTrackerSync:
         # Latency (diagnostic): processing time from callback start to now.
         t_pub = rospy.Time.now()
         latency_proc = (t_pub - t_cb_start).to_sec()
-        # rospy.loginfo(f"Latency: ({latency_proc}) s")
+        rospy.loginfo(f"Latency: ({latency_proc}) s")
         # rospy.loginfo(f"Point: ({X}, {Y}, {Z})")
 
         # 5) Publish point (for numeric consumers / PlotJuggler).
@@ -278,7 +278,7 @@ class BallTrackerSync:
         pt.header = Header(stamp=stamp, frame_id=self.frame_id)
         pt.point.x, pt.point.y, pt.point.z = X, Y, Z
         self.pub_point.publish(pt)
-        rospy.loginfo(f"Point: ({X}, {Y}, {Z})")
+        #rospy.loginfo(f"Point: ({X}, {Y}, {Z})")
 
         # Pose with identity orientation (no yaw/pitch/roll inference here).
         pose = PoseStamped()

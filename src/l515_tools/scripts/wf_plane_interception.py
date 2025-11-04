@@ -234,6 +234,10 @@ class Plane_Interception:
                                                rospy.Time(0), rospy.Duration(0.02))
             qee = T_w_ee.transform.rotation
             q_ee = np.array([qee.x, qee.y, qee.z, qee.w], dtype=np.float64)
+            p_ee = np.array([T_w_ee.transform.translation.x,
+                           T_w_ee.transform.translation.y,
+                           T_w_ee.transform.translation.z], dtype=np.float64)
+            rospy.loginfo(f"End effector: {q_ee}")
         except Exception as e:
             rospy.logwarn_throttle(1.0, f"[bridge_minDist] EE TF lookup failed ({self.ee_frame}→{self.world_frame}): {e}")
             return
@@ -308,16 +312,21 @@ class Plane_Interception:
                 use_q = q_ee
 
             # Controller command: EETarget uses Optimization 2 result (as in your code)
-            msg = EETarget()
-            msg.ee_target.position.x = pt_h.point.x
-            msg.ee_target.position.y = pt_h.point.y
-            msg.ee_target.position.z = pt_h.point.z
-            msg.ee_target.orientation.x = float(use_q[0])
-            msg.ee_target.orientation.y = float(use_q[1])
-            msg.ee_target.orientation.z = float(use_q[2])
-            msg.ee_target.orientation.w = float(use_q[3])
-            msg.duration = t_hit
-            self.pub.publish(msg)
+
+            half = float(rospy.get_param("~ee_gate_half_m", 0.50))
+            rospy.loginfo({abs(p_hit[1] - p_ee[1])})
+            inside_square = (abs(p_hit[1] - p_ee[1]) <= half) and (abs(p_hit[2] - p_ee[2]) <= half)
+            if inside_square:
+                msg = EETarget()
+                msg.ee_target.position.x = pt_h.point.x
+                msg.ee_target.position.y = pt_h.point.y
+                msg.ee_target.position.z = pt_h.point.z
+                msg.ee_target.orientation.x = float(use_q[0])
+                msg.ee_target.orientation.y = float(use_q[1])
+                msg.ee_target.orientation.z = float(use_q[2])
+                msg.ee_target.orientation.w = float(use_q[3])
+                msg.duration = t_hit
+                self.pub.publish(msg)
 
         self.old_x, self.old_y, self.old_z = p_hit[0], p_hit[1], p_hit[2]
         self.last_t_hit = t_hit

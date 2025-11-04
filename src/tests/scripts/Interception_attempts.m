@@ -4,8 +4,8 @@
 clc; clear; close all;
 
 % ---------- CONFIG ----------
-logFile = 'min_1_tiro2.txt';       % input log file
-outCsv  = 'min_atmp1.csv';  % output CSV file
+logFile = 'min_2_tiro2.txt';       % input log file
+outCsv  = 'min_atmp6.csv';  % output CSV file
 % ----------------------------
 
 % Open file
@@ -74,7 +74,7 @@ ylabel('Orientation Error (°)');
 
 
 %yline(15, '--k', 'Threshold (°)');
-xline(250, '--k', 'Threshold (t)');
+xline(133, '--k', 'Threshold (t)');
 
 xlabel('Time to Interception (ms)');
 title('End-Effector Error Convergence During Interception');
@@ -82,7 +82,7 @@ grid on;
 legend('Position Error','Orientation Error','Threshold');
 
 % Save to CSV
-%writetable(T, outCsv);fprintf('✅ Se extrajeron %d intentos.\n', height(T));fprintf('📄 Archivo CSV guardado en: %s\n', outCsv);
+writetable(T, outCsv);fprintf('✅ Se extrajeron %d intentos.\n', height(T));fprintf('📄 Archivo CSV guardado en: %s\n', outCsv);
 
 % Optional: show summary
 fprintf('\nResumen:\n');

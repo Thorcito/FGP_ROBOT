@@ -433,13 +433,13 @@ namespace tum_ics_ur_robot_lli
 
       JointState js_r;
       js_r.qp = J_tool_0.inverse() * Xp_r;
-      constexpr double QDOT_MAX = 2.7;  // almost 180 deg/s in rad/s
+      constexpr double QDOT_MAX = 2.09;  // almost 180 deg/s in rad/s
       for (int i = 0; i < 6; ++i) {
         if (js_r.qp[i] >  QDOT_MAX) js_r.qp[i] =  QDOT_MAX;
         if (js_r.qp[i] < -QDOT_MAX) js_r.qp[i] = -QDOT_MAX;
       }
       js_r.qpp = J_tool_0.inverse() * (Xpp_r - Jp_tool_0 * js_r.qp);
-      constexpr double QDDOT_MAX = 5.5; // rad/s^2 
+      constexpr double QDDOT_MAX = 4.4; // rad/s^2 
       for (int i = 0; i < 6; ++i) {
         if (js_r.qpp[i] >  QDDOT_MAX) js_r.qpp[i] =  QDDOT_MAX;
         if (js_r.qpp[i] < -QDDOT_MAX) js_r.qpp[i] = -QDDOT_MAX;
