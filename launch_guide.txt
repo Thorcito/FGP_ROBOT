@@ -80,3 +80,21 @@ Minimum-distance criterion:
 4. ball_predictor_min_dist.py
 5. bridge_min_distance.py
 6. Controller launch
+
+
+
+To run on real robot:
+set static IP to 192.168.1.3.
+Modify .bashrc
+
+rosmaster_ur10()
+{
+export ROS_MASTER_URI=http://192.168.1.3:11311
+export ROS_IP=192.168.1.3
+}
+rosmaster_local()
+{
+export ROS_MASTER_URI=http://localhost:11311
+export ROS_IP=127.0.0.1
+}
+
