@@ -316,7 +316,10 @@ class Plane_Interception:
             half = float(rospy.get_param("~ee_gate_half_m", 0.50))
             rospy.loginfo({abs(p_hit[1] - p_ee[1])})
             inside_square = (abs(p_hit[1] - p_ee[1]) <= half) and (abs(p_hit[2] - p_ee[2]) <= half)
-            if inside_square:
+            bounce = p_hit[0] <= self.old_x
+            if bounce:
+                rospy.logerr("BOUNCE DETECTED")
+            if inside_square and bounce:
                 msg = EETarget()
                 msg.ee_target.position.x = pt_h.point.x
                 msg.ee_target.position.y = pt_h.point.y
