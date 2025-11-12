@@ -92,9 +92,9 @@ class KFtoEETargetBridgeMinDist:
         self.publish_camera_tf = rospy.get_param("~publish_camera_tf", True)
         self.camera_parent     = rospy.get_param("~camera_parent", "world")
         self.camera_frame      = rospy.get_param("~camera_frame", "camera_color_optical_frame")
-        self.cam_xyz           = rospy.get_param("~camera_xyz", [-0.155, 0.0, -0.45])
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.3026, -0.0604, 0.9295])
         self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])  # x y z w
-        self.rot_angle = rospy.get_param("~rot_angle", 44)
+        self.rot_angle = rospy.get_param("~rot_angle", 0)
 
         # Orientation tracking
         self.vel_min_speed = float(rospy.get_param("~vel_min_speed_mps", 0.6))
@@ -449,14 +449,14 @@ class KFtoEETargetBridgeMinDist:
 
             # Controller command: EETarget uses Optimization 2 result (as in your code)
             msg = EETarget()
-            msg.ee_target.position.x = p_desired_opt2[0]
-            msg.ee_target.position.y = p_desired_opt2[1]
-            msg.ee_target.position.z = p_desired_opt2[2]
+            msg.ee_target.position.x = p_star[0]
+            msg.ee_target.position.y = p_star[1]
+            msg.ee_target.position.z = p_star[2]
             msg.ee_target.orientation.x = float(use_q[0])
             msg.ee_target.orientation.y = float(use_q[1])
             msg.ee_target.orientation.z = float(use_q[2])
             msg.ee_target.orientation.w = float(use_q[3])
-            msg.duration = t_desired_opt2
+            msg.duration = t_star
             self.pub.publish(msg)
             rospy.loginfo(f"Enviado" )
 

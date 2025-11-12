@@ -25,9 +25,9 @@ class BallTrackerSync:
 
         # Transformation to world frame
         self.parent_frame     = rospy.get_param("~parent_frame", "world")
-        self.cam_xyz           = rospy.get_param("~camera_xyz", [-0.155, 0.0, -0.45])
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.3026, -0.0604, 0.9295])
         self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])  # x y z w
-        self.rot_angle = rospy.get_param("~rot_angle", 44)
+        self.rot_angle = rospy.get_param("~rot_angle", 0)
         self.static_sent = False
 
          # -------- TF2 --------
@@ -52,16 +52,16 @@ class BallTrackerSync:
         # HSV segmentation & morphology ops
         # ---------------------------------
         # Fixed thresholds are assumed tuned for your ball color and lighting.
-        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 55,  40]), dtype=np.uint8)
-        self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [170, 255, 255]), dtype=np.uint8)
+        self.hsv_lower = np.array(rospy.get_param("~hsv_lower", [105, 55,  33]), dtype=np.uint8)
+        self.hsv_upper = np.array(rospy.get_param("~hsv_upper", [170, 160, 255]), dtype=np.uint8)
         self.blur_ksize = int(rospy.get_param("~blur", 1))   
-        self.open_it    = int(rospy.get_param("~open", 6))
+        self.open_it    = int(rospy.get_param("~open", 3))
         self.close_it   = int(rospy.get_param("~close", 1))
 
         # ---------------------------------
         # Geometry filters & outlier gating
         # ---------------------------------
-        self.min_area_px     = int(rospy.get_param("~min_area_px", 400)) #150min 
+        self.min_area_px     = int(rospy.get_param("~min_area_px", 200)) #150min 
         self.min_circularity = float(rospy.get_param("~min_circularity", 0.5))
         self.max_jump_m = float(rospy.get_param("~max_jump_m", 0.40))
         self._last_xyz = None  # last accepted 3D point (for jump gating)
@@ -69,7 +69,7 @@ class BallTrackerSync:
         # ---------------------------
         # Depth sampling patch size
         # ---------------------------
-        self.depth_patch = int(rospy.get_param("~depth_patch", 1))
+        self.depth_patch = int(rospy.get_param("~depth_patch", 10))
 
         # ---------------------------
         # Path management for RViz
@@ -197,12 +197,15 @@ class BallTrackerSync:
         for c in cnts:
             area = cv2.contourArea(c)
             if area <= self.min_area_px:
+                rospy.logerr(f"AREA: {area}")
                 continue
             peri = cv2.arcLength(c, True)
             if peri <= 0:
+                rospy.logerr("PERIMETRO")
                 continue
             circ = 4.0*np.pi*area/(peri*peri)  # circularity in [0,1]
             if circ < self.min_circularity:
+                rospy.logerr("CIRCULARIDAD")
                 continue
             (x, y), r = cv2.minEnclosingCircle(c)
             # Heuristic score: prefer more circular & larger area.
@@ -224,14 +227,18 @@ class BallTrackerSync:
 
         # 3) Robust Z from depth: median over a small patch centered at (u,v).
         half = self.depth_patch // 2
-        x0 = max(0, u - half); x1 = min(W, u + half + 1)
-        y0 = max(0, v - half); y1 = min(H, v + half + 1)
+        rad = int(0.8 * r)
+        x0 = max(0, u - rad); x1 = min(W, u + rad + 1)
+        y0 = max(0, v - rad); y1 = min(H, v + rad + 1)
 
         patch = depth_u16[y0:y1, x0:x1].astype(np.float32) * self.depth_scale
-        cv2.rectangle(debug, (x0, y0), (x1, y1), (255, 255, 255), 4)
+        #cv2.rectangle(debug, (x0, y0), (x1, y1), (255, 255, 255), 1)
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        circle_mask = (xx-u)**2 + (yy-v)**2 <= (rad*rad)
+        cv2.circle(debug, (u,v), rad, (255,255,255), 2)
 
         # Valid depth filter: finite, positive, and above min_valid_z.
-        valid = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z)
+        valid = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z) & circle_mask
         if np.count_nonzero(valid) == 0:
             # No usable depth: publish diagnostics and skip.
             self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))

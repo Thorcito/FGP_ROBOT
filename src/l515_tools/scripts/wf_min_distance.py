@@ -10,7 +10,7 @@ import numpy as np
 import tf2_ros
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 
-class Plane_Interception:
+class Minimum_Distance:
     def __init__(self):
         # -------- params --------
         self.position_topic = rospy.get_param("~position_topic", "/world_ball_pred/current_pos")
@@ -28,11 +28,6 @@ class Plane_Interception:
         self.dir_sign = -1.0
         self.dir_alpha = float(rospy.get_param("~dir_alpha", 0.5))
 
-        #Plane of interception
-        self.x_plane_m  = float(rospy.get_param("~x_plane_m", -0.7))
-        self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 1.0))
-        self.hit_history_max = int(rospy.get_param("~hit_history_max", 20))
-
         # -------- state --------
         self.pos_ema = None
         self.hit_history = []
@@ -40,6 +35,8 @@ class Plane_Interception:
         self.last_t_hit = None
         self.max_step_m     = rospy.get_param("~max_step_m", 0.13)
         self.first_reading = False
+        self.hit_history_max = int(rospy.get_param("~hit_history_max", 20))
+        self.option = rospy.get_param("~option", 1)
 
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
@@ -47,11 +44,10 @@ class Plane_Interception:
 
         # -------- pubs --------
         self.pub = rospy.Publisher("ee_target", EETarget, queue_size=1)
-        self.pub_hit_point = rospy.Publisher("/PlaneInt/hit_point", PointStamped, queue_size=10)
-        self.pub_hit_time  = rospy.Publisher("/PlaneInt/hit_time_s", Float32, queue_size=10)
-        self.pub_hit_history = rospy.Publisher("/PlaneInt/hit_history", Path, queue_size=10)
-        self.pub_markers_static = rospy.Publisher("/PlaneInt/static_plane", Marker, queue_size=1, latch=True)
-        self.pub_pred_vel_hit = rospy.Publisher("/PlaneInt/pred_vel_hit", Vector3Stamped, queue_size=10)
+        self.pub_hit_point = rospy.Publisher("/MinDist/hit_point", PointStamped, queue_size=10)
+        self.pub_hit_time  = rospy.Publisher("/MinDist/hit_time_s", Float32, queue_size=10)
+        self.pub_hit_history = rospy.Publisher("/MinDist/hit_history", Path, queue_size=10)
+        self.pub_pred_vel_hit = rospy.Publisher("/MinDist/pred_vel_hit", Vector3Stamped, queue_size=10)
 
         # -------- exact time sync subscribers --------
         pos_sub = Subscriber(self.position_topic, PointStamped)
@@ -59,9 +55,8 @@ class Plane_Interception:
         ats_slop = float(rospy.get_param("~sync_slop_s", 0.05))  # 20 ms default
         ts = ApproximateTimeSynchronizer([pos_sub, vel_sub], queue_size=25, slop=ats_slop, allow_headerless=False)
         ts.registerCallback(self.on_pair)
-        self.publish_static_plane_markers()
 
-        rospy.loginfo(f"[bridge_planeIntercept] ready")
+        rospy.loginfo(f"[bridge_minimunDistance] ready option : {self.option}")
 
     # ---------- helpers ----------
 
@@ -160,64 +155,72 @@ class Plane_Interception:
             return 2.0 * math.acos(dot)
         return (q1, quat_angle(q_now, q1)) if quat_angle(q_now, q1) <= quat_angle(q_now, q2) else (q2, quat_angle(q_now, q2))
     
-    @staticmethod
-    def solve_time_to_plane_1d(a, b, c, t_min=0.0, t_max=None, eps=1e-9):
-        """
-        Solve a*t^2 + b*t + c = 0 for the earliest valid root in [t_min, t_max].
-        Handles degenerate linear/constant cases and negative discriminant.
-
-        Returns:
-            t (float or None): earliest feasible intercept time.
-        """
-        # earliest admissible root in [t_min, t_max]
-        if abs(a) < eps:
-            if abs(b) < eps:
-                if abs(c) < eps:
-                    t = 0.0
-                else:
-                    return None
-            else:
-                t = -c / b
-            if t < t_min or (t_max is not None and t > t_max):
-                return None
-            return float(t)
-        D = b*b - 4.0*a*c
-        if D < 0.0:
-            return None
-        sqrtD = np.sqrt(D)
-        t1 = (-b - sqrtD) / (2.0*a)
-        t2 = (-b + sqrtD) / (2.0*a)
-        candidates = []
-        for t in (t1, t2):
-            if t >= t_min and (t_max is None or t <= t_max):
-                candidates.append(float(t))
-        if not candidates:
-            return None
-        return min(candidates)
+    def distance_squared(self, pos_robot, p0_ball, v0_ball, t, g):
+        """Squared distance between robot position and ball position at time t."""
+        ball_tray = p0_ball + v0_ball*t + 0.5*g*t*t
+        dist = pos_robot - ball_tray
+        return float(dist@dist)
     
-    def publish_static_plane_markers(self):
+    def derivate_distance_squared(self, pos_robot, p0_ball, v0_ball, g):
         """
-        Publish a translucent CUBE marker representing the active intercept plane.
-        Only the plane matching self.plane_mode is published (latching publisher).
+        Solve d/dt || pe - (p0 + v0 t + 1/2 g t^2) ||^2 = 0
+        => cubic A t^3 + B t^2 + C t + D = 0 (coefficients below).
+        Returns complex roots; caller filters real roots in [t_min, t_max].
         """
-        PLANE_THICKNESS = 0.005
-        YZ_SIZE_Y = 4.0   # span along world Y
-        YZ_SIZE_Z = 4.0   # span along world Z
-        PLANE_ALPHA = 0.3
-        m = Marker()
-        m.header.frame_id = self.world_frame
-        m.header.stamp = rospy.Time.now()
-        m.ns = "planes"; m.id = 1
-        m.type = Marker.CUBE; m.action = Marker.ADD
-        m.pose.orientation.w = 1.0
-        m.pose.position.x = float(self.x_plane_m)
-        m.pose.position.y = 0.0
-        m.pose.position.z = 0.0
-        m.scale.x = max(PLANE_THICKNESS, 1e-4)   # thin along X
-        m.scale.y = YZ_SIZE_Y
-        m.scale.z = YZ_SIZE_Z
-        m.color.r, m.color.g, m.color.b, m.color.a = (1.0, 1.0, 0.0, PLANE_ALPHA)
-        self.pub_markers_static.publish(m)
+        #Given the equation At3+Bt2+Ct+D=0
+        A = 0.5*(g@g) #0.5g²*t³
+        B = -1.5*g@v0_ball #-1.5*g*v*t²
+        C = v0_ball@v0_ball+g@(pos_robot-p0_ball) #(v²+g(p_r-p_b))
+        D = -(pos_robot-p0_ball)@v0_ball #-v(p_r-p_b)
+        coeff = np.array([A, B, C, D])
+        roots = np.roots(coeff)
+        #rospy.logerr(f"[brrdge] ROOTS: ({roots})." )
+        return roots
+    
+    def future_trajectories(self, p0_ball, v0_ball, g, t_total=1.0, n_points=10):
+        """
+        Sample the future ballistic trajectory at n_points over [0, t_total].
+        Returns (times, trajectory_points[N,3]).
+        """
+        # Generate evenly spaced time steps from 0 to t_total
+        t = np.linspace(0, t_total, n_points)
+        t_col = t[:, None]                                 
+        traj = p0_ball + v0_ball*t_col + 0.5*g*(t_col**2)   
+        return t, traj
+    
+    def minimize_distance(self, pos_robot, trajectories, times):
+        """
+        Discrete argmin over sampled positions: choose index with minimum squared distance.
+        Returns (time, closest_point[3]).
+        """
+        pos_robot = np.asarray(pos_robot).reshape(1, 3)
+        trajectories = np.asarray(trajectories)
+        diff = trajectories - pos_robot                     
+        min_distances = 0.5 * np.sum(diff**2, axis=1)                   
+        idx = int(np.argmin(min_distances))
+        closet_point = trajectories[idx]
+        time = times[idx]
+        return time, closet_point
+    
+    def minimize_time(self, pos_robot, p0_ball, v0_ball, g):
+        """
+        Analytic candidate times from cubic roots (and endpoints) over [0,1]s.
+        Returns (best_time, best_distance_sq).
+        """
+        #set minimun and maximun times to solve
+        t_min = 0.0
+        t_max = 1.0
+        t_possible = self.derivate_distance_squared(pos_robot, p0_ball, v0_ball, g)
+        candidates = []
+        for r in t_possible:
+            if abs(r.imag) < 1e-9: #real root
+                t_real = float(r.real)
+                if t_min <= t_real <= t_max:
+                    candidates.append(t_real)
+        candidates.extend([t_min, t_max])
+        distance = [self.distance_squared(pos_robot, p0_ball, v0_ball, t_real, g) for t_real in candidates]
+        desired_time = int(np.argmin(distance))
+        return float(candidates[desired_time]), float(distance[desired_time])
     
     # ---------- paired callback ----------
     def on_pair(self, p_world: PointStamped, v_world: Vector3Stamped):
@@ -244,42 +247,40 @@ class Plane_Interception:
         
         point = np.array([p_world.point.x , p_world.point.y, p_world.point.z], dtype=np.float64)
 
-        # Plane hits
-        a_x = 0.5 * self.g_world[0]
-        b_x = v_world_np[0]
-        c_x = point[0] - self.x_plane_m
-        t_hit = self.solve_time_to_plane_1d(a_x, b_x, c_x, t_min=0.0, t_max=self.hit_horizon_s)
-        if t_hit is None:
-            rospy.logerr("No time to hit the plane")
-            return
-        p_hit = point + v_world_np*t_hit + 0.5*self.g_world*(t_hit*t_hit)
-        v_hit_world = v_world_np + self.g_world * t_hit
+        # Minimun Distance Criterion
+        # Optimization 1 (analytic)
+        vel_no_q = v_world_np
+        t_star, f_star = self.minimize_time(p_ee, point, vel_no_q, self.g_world)
+        p_star = point + vel_no_q*t_star + 0.5*self.g_world*(t_star*t_star)
+        if t_star != 0:
+            rospy.logwarn(f"[bridge] time: {t_star} , pos: {p_star} , error: {f_star}")
+        
 
-        # Distance gate (reject large jumps between successive accepted targets)
-        if self.old_x is not None:
-            dx = p_hit[0] - self.old_x
-            dy = p_hit[1] - self.old_y
-            dz = p_hit[2]- self.old_z
-            step = math.sqrt(dx*dx + dy*dy + dz*dz)
-            delta_t = abs(t_hit - self.last_t_hit)
-            rospy.logerr(f"Step: {step}, Time: {delta_t} ")
-            if step > self.max_step_m and delta_t > 0.2:
-                rospy.logerr_throttle(0.0, f"Distance ({step}) or Time Gate ({delta_t}) ")
-                self.old_x, self.old_y, self.old_z = p_hit[0], p_hit[1], p_hit[2]
-                self.last_t_hit = t_hit
-                self.pos_ema = None
-                self.first_reading = False
-                return
+        # Optimization 2 (discrete sampling)
+        times_opt2, poss_opt2 = self.future_trajectories(point, vel_no_q, self.g_world, t_total=1, n_points=10)
+        t_desired_opt2, p_desired_opt2 = self.minimize_distance(p_ee, poss_opt2, times_opt2)
 
-        rospy.loginfo(f"Vel: {v_world_np[0]}")
+        if t_star != 0:
+            rospy.logerr(f"[bridge] Valid root found T: {t_star} " )
+        else:
+            rospy.logerr(f"[bridge] No valid root found T: {t_star} " )
+
+        if self.option == 1:
+            v_hit_world = v_world_np + self.g_world * t_star
+        else:
+            v_hit_world = v_world_np + self.g_world * t_desired_opt2
+        
         # Publish
-        if (t_hit is not None) and (p_hit is not None) and self.first_reading:
+        if (t_star != 0) and (f_star <= 0.15):
             pt_h = PointStamped()
             pt_h.header = hdr
-            pt_h.point.x, pt_h.point.y, pt_h.point.z = float(p_hit[0]), float(p_hit[1]), float(p_hit[2])
+            if self.option == 1:
+                pt_h.point.x, pt_h.point.y, pt_h.point.z = float(p_star[0]), float(p_star[1]), float(p_star[2])
+            else: 
+                pt_h.point.x, pt_h.point.y, pt_h.point.z = float(p_desired_opt2[0]), float(p_desired_opt2[1]), float(p_desired_opt2[2])
             self.pub_hit_point.publish(pt_h)
-            self.pub_hit_time.publish(Float32(data=float(t_hit)))
-            rospy.loginfo_throttle(0.0, f"Time to intercept: (t={t_hit:.6f})")
+            self.pub_hit_time.publish(Float32(data=float(t_star)))
+            rospy.loginfo_throttle(0.0, f"Time to intercept: (t={t_star:.6f})")
 
             pose_h = PoseStamped(); pose_h.header = hdr
             pose_h.pose.position.x = pt_h.point.x
@@ -315,12 +316,20 @@ class Plane_Interception:
             # Controller command: EETarget uses Optimization 2 result (as in your code)
 
             half = float(rospy.get_param("~ee_gate_half_m", 0.50))
-            rospy.loginfo({abs(p_hit[1] - p_ee[1])})
-            inside_square = (abs(p_hit[1] - p_ee[1]) <= half) and (abs(p_hit[2] - p_ee[2]) <= half)
-            bounce = point[0] <= self.old_x
-            if not bounce:
+            if self.option == 1:
+                #rospy.loginfo({abs(p_star[1] - p_ee[1])})
+                inside_square = (abs(p_star[1] - p_ee[1]) <= half) and (abs(p_star[2] - p_ee[2]) <= half) and (abs(p_star[0] - p_ee[0])<= half)
+                #bounce = point[0] <= self.old_x
+            else:
+                #rospy.loginfo({abs(p_desired_opt2[1] - p_ee[1])})
+                inside_square = (abs(p_desired_opt2[1] - p_ee[1]) <= half) and (abs(p_desired_opt2[2] - p_ee[2]) <= half) and (abs(p_desired_opt2[0] - p_ee[0])<= half)
+                #bounce = point[0] <= self.old_x
+            #if not bounce:
                 rospy.logerr("BOUNCE DETECTED")
-            if inside_square and bounce:
+            if inside_square:
+                rospy.loginfo(f"[bridge] EE_POS: {p_ee} " )
+                rospy.logwarn(f"[bridge] T_HIT: {t_star} , P_HIT: {p_star}" )
+                rospy.logwarn(f"[bridge] T_HIT_2: {t_desired_opt2} , P_HIT_2: ({p_desired_opt2})" )
                 msg = EETarget()
                 msg.ee_target.position.x = pt_h.point.x
                 msg.ee_target.position.y = pt_h.point.y
@@ -329,14 +338,22 @@ class Plane_Interception:
                 msg.ee_target.orientation.y = float(use_q[1])
                 msg.ee_target.orientation.z = float(use_q[2])
                 msg.ee_target.orientation.w = float(use_q[3])
-                msg.duration = t_hit
+                if self.option == 1:
+                    msg.duration = t_star
+                else:
+                    msg.duration = t_desired_opt2
                 self.pub.publish(msg)
 
-        self.old_x, self.old_y, self.old_z = p_hit[0], p_hit[1], p_hit[2]
-        self.last_t_hit = t_hit
-        self.first_reading = True
+        if self.option == 1:
+            self.old_x, self.old_y, self.old_z = p_star[0], p_star[1], p_star[2]
+            self.last_t_hit = t_star
+            self.first_reading = True
+        else:
+            self.old_x, self.old_y, self.old_z = p_desired_opt2[0], p_desired_opt2[1], p_desired_opt2[2]
+            self.last_t_hit = t_desired_opt2
+            self.first_reading = True
 
 if __name__ == "__main__":
-    rospy.init_node("Plane_Interception")
-    Plane_Interception()
+    rospy.init_node("Minimum_Distance")
+    Minimum_Distance()
     rospy.spin()

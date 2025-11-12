@@ -16,8 +16,8 @@ class KalmanFilter_world:
 
         # per-axis measurement / process (accel) noise
         # R = diag(sigma_pos_xyz^2); Q derived from sigma_acc_xyz via white-noise accel model
-        self.sigma_pos_xyz = np.array(rospy.get_param("~sigma_pos_xyz", [0.0722, 0.0736, 0.0576]), dtype=np.float64)
-        self.sigma_acc_xyz = np.array(rospy.get_param("~sigma_acc_xyz", [7.30, 7.02, 6.84]), dtype=np.float64)
+        self.sigma_pos_xyz = np.array(rospy.get_param("~sigma_pos_xyz", [0.07, 0.1, 0.007]), dtype=np.float64)
+        self.sigma_acc_xyz = np.array(rospy.get_param("~sigma_acc_xyz", [6.0, 8.0, 8.0]), dtype=np.float64)
 
         # proper initialization std devs (used only at first detection)
         self.init_pos_std  = float(rospy.get_param("~init_pos_std_m", 0.02))
