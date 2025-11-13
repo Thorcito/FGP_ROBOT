@@ -1,0 +1,46 @@
+<launch>
+  <!-- Tracker -->
+  <node pkg="l515_tools" type="wf_ball_tracker.py" name="ball_tracker_sync" output="screen">
+    <!-- tracker params -->
+  </node>
+
+  <!-- Kalman Filter -->
+  <node pkg="l515_tools" type="wf_kalman_filter.py" name="kalman_filter_world" output="screen">
+    <param name="input_topic" value="/world_ball_meas/point"/>
+    <!-- KF params -->
+  </node>
+
+  <!-- Plane Interception -->
+  <node pkg="l515_tools" type="wf_plane_interception.py" name="plane_interception" output="screen">
+    <param name="position_topic" value="/world_ball_pred/current_pos"/>
+    <param name="velocity_topic" value="/world_ball_pred/current_vel"/>
+    <!-- interception params -->
+  </node>
+
+  <!-- BallCatcherController -->
+  <include file="$(find tum_ics_ur10_controller_tutorial)/launch/testBallCatcherController.launch" />
+
+  <!-- rosbag recorder -->
+  <node pkg="rosbag" type="record" name="record_pipeline"
+        args="-O ball_throws_pipeline.bag --lz4
+              /world_ball_meas/point
+              /world_ball_meas/pose
+              /world_ball_meas/path
+              /cam_ball_meas/debug_image
+              /cam_ball_meas/debug_mask
+              /world_ball_pred/current_pos
+              /world_ball_pred/current_vel
+              /world_ball_pred/path_filt
+              /world_ball_pred/pred_point
+              /world_ball_pred/pred_path
+              ee_target
+              /PlaneInt/hit_point
+              /PlaneInt/hit_time_s
+              /PlaneInt/hit_history
+              /PlaneInt/static_plane
+              /PlaneInt/pred_vel_hit
+              /cartesian_path
+              /joint_states
+              /tf
+              /tf_static" />
+</launch>

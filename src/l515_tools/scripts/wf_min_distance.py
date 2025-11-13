@@ -38,6 +38,15 @@ class Minimum_Distance:
         self.hit_history_max = int(rospy.get_param("~hit_history_max", 20))
         self.option = rospy.get_param("~option", 1)
 
+        # -------- benchmark options --------
+        self.benchmark = bool(rospy.get_param("~benchmark", False))
+        # list of sample sizes to test for OPT_2
+        self.bench_n_points_list = rospy.get_param("~benchmark_n_points", [10, 100, 500, 1000, 1500, 2000])
+        # how many repetitions per configuration
+        self.bench_reps = int(rospy.get_param("~benchmark_reps", 200))
+        self._did_benchmark = False
+
+
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
         self.listener = tf2_ros.TransformListener(self.buf)
@@ -56,7 +65,7 @@ class Minimum_Distance:
         ts = ApproximateTimeSynchronizer([pos_sub, vel_sub], queue_size=25, slop=ats_slop, allow_headerless=False)
         ts.registerCallback(self.on_pair)
 
-        rospy.loginfo(f"[bridge_minimunDistance] ready option : {self.option}")
+        rospy.loginfo(f"[bridge_minimunDistance] ready option : {self.option}, benchy = {self.benchmark}")
 
     # ---------- helpers ----------
 
@@ -169,8 +178,8 @@ class Minimum_Distance:
         """
         #Given the equation At3+Bt2+Ct+D=0
         A = 0.5*(g@g) #0.5g²*t³
-        B = -1.5*g@v0_ball #-1.5*g*v*t²
-        C = v0_ball@v0_ball+g@(pos_robot-p0_ball) #(v²+g(p_r-p_b))
+        B = 1.5*g@v0_ball #1.5*g*v*t²
+        C = v0_ball@v0_ball-g@(pos_robot-p0_ball) #(v²+g(p_r-p_b))
         D = -(pos_robot-p0_ball)@v0_ball #-v(p_r-p_b)
         coeff = np.array([A, B, C, D])
         roots = np.roots(coeff)
@@ -222,6 +231,40 @@ class Minimum_Distance:
         desired_time = int(np.argmin(distance))
         return float(candidates[desired_time]), float(distance[desired_time])
     
+    def run_benchmark(self, p_ee, point, v_world_np):
+        """
+        Benchmark OPT_1 (analytic) vs OPT_2 (discrete) for different n_points.
+        Uses fixed p_ee, point, v_world_np from this callback.
+        Runs self.bench_reps times per configuration and logs average durations in ms.
+        """
+        rospy.logwarn("[benchmark] Starting Minimum_Distance benchmark...")
+        g = self.g_world
+        v0 = v_world_np
+
+        # --- benchmark OPT_1 (analytic) ---
+        t_start = rospy.Time.now().to_sec()
+        for _ in range(self.bench_reps):
+            t_star, f_star = self.minimize_time(p_ee, point, v0, g)
+            # small extra work to keep it realistic
+            _ = point + v0*t_star + 0.5*g*(t_star*t_star)
+        t_total = rospy.Time.now().to_sec() - t_start
+        opt1_mean_ms = (t_total / self.bench_reps) * 1000.0
+
+        rospy.logwarn(f"[benchmark] OPT_1 (analytic) mean over {self.bench_reps} iters: {opt1_mean_ms:.3f} ms")
+
+        # --- benchmark OPT_2 (discrete) for different n_points ---
+        for n_pts in self.bench_n_points_list:
+            t_start = rospy.Time.now().to_sec()
+            for _ in range(self.bench_reps):
+                times_opt2, poss_opt2 = self.future_trajectories(point, v0, g, t_total=1.0, n_points=n_pts)
+                t_desired_opt2, p_desired_opt2 = self.minimize_distance(p_ee, poss_opt2, times_opt2)
+                _ = t_desired_opt2, p_desired_opt2  # keep symmetry
+            t_total = rospy.Time.now().to_sec() - t_start
+            opt2_mean_ms = (t_total / self.bench_reps) * 1000.0
+            rospy.logwarn(f"[benchmark] OPT_2 (n_points={n_pts}) mean: {opt2_mean_ms:.3f} ms")
+
+        rospy.logwarn("[benchmark] Benchmark finished.")
+    
     # ---------- paired callback ----------
     def on_pair(self, p_world: PointStamped, v_world: Vector3Stamped):
         stamp = p_world.header.stamp
@@ -249,16 +292,22 @@ class Minimum_Distance:
 
         # Minimun Distance Criterion
         # Optimization 1 (analytic)
+        t_start_opt1 = rospy.Time.now()
         vel_no_q = v_world_np
         t_star, f_star = self.minimize_time(p_ee, point, vel_no_q, self.g_world)
         p_star = point + vel_no_q*t_star + 0.5*self.g_world*(t_star*t_star)
+        t_opt1 = (rospy.Time.now() - t_start_opt1).to_sec()
+        if t_star != 0: rospy.loginfo(f"OPT_1 => ({t_opt1*1000})")
         if t_star != 0:
             rospy.logwarn(f"[bridge] time: {t_star} , pos: {p_star} , error: {f_star}")
         
 
         # Optimization 2 (discrete sampling)
-        times_opt2, poss_opt2 = self.future_trajectories(point, vel_no_q, self.g_world, t_total=1, n_points=10)
+        t_start_opt2 = rospy.Time.now()
+        times_opt2, poss_opt2 = self.future_trajectories(point, vel_no_q, self.g_world, t_total=1, n_points=100)
         t_desired_opt2, p_desired_opt2 = self.minimize_distance(p_ee, poss_opt2, times_opt2)
+        t_opt2 = (rospy.Time.now() - t_start_opt2).to_sec()
+        if t_desired_opt2 != 0: rospy.loginfo(f"OPT_2 => ({t_opt2*1000})")
 
         if t_star != 0:
             rospy.logerr(f"[bridge] Valid root found T: {t_star} " )
@@ -325,7 +374,7 @@ class Minimum_Distance:
                 inside_square = (abs(p_desired_opt2[1] - p_ee[1]) <= half) and (abs(p_desired_opt2[2] - p_ee[2]) <= half) and (abs(p_desired_opt2[0] - p_ee[0])<= half)
                 #bounce = point[0] <= self.old_x
             #if not bounce:
-                rospy.logerr("BOUNCE DETECTED")
+                #rospy.logerr("BOUNCE DETECTED")
             if inside_square:
                 rospy.loginfo(f"[bridge] EE_POS: {p_ee} " )
                 rospy.logwarn(f"[bridge] T_HIT: {t_star} , P_HIT: {p_star}" )
@@ -343,6 +392,9 @@ class Minimum_Distance:
                 else:
                     msg.duration = t_desired_opt2
                 self.pub.publish(msg)
+                if self.benchmark and not self._did_benchmark:
+                    self.run_benchmark(p_ee, point, v_world_np)
+                    self._did_benchmark = True
 
         if self.option == 1:
             self.old_x, self.old_y, self.old_z = p_star[0], p_star[1], p_star[2]

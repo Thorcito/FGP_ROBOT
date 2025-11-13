@@ -96,6 +96,7 @@ class BallTrackerSync:
         self.pub_path_world   = rospy.Publisher("/world_ball_meas/path", Path, queue_size=10) if self.path_publish else None
         self.pub_debug   = rospy.Publisher("/cam_ball_meas/debug_image", Image, queue_size=1)
         self.pub_mask    = rospy.Publisher("/cam_ball_meas/debug_mask", Image, queue_size=1)
+        self.pub_test    = rospy.Publisher("/cam_ball_meas/test_mask", Image, queue_size=1)
 
         # ---------------------------
         # Subscribers
@@ -226,25 +227,28 @@ class BallTrackerSync:
         cv2.circle(debug, (u, v), 3, (0,0,255), -1)
 
         # 3) Robust Z from depth: median over a small patch centered at (u,v).
-        half = self.depth_patch // 2
-        rad = int(0.8 * r)
-        x0 = max(0, u - rad); x1 = min(W, u + rad + 1)
-        y0 = max(0, v - rad); y1 = min(H, v + rad + 1)
+        depth_m = depth_u16.astype(np.float32) * self.depth_scale
+        # Build a binary mask for the selected contour only
+        contour_mask = np.zeros_like(mask, dtype=np.uint8)
+        cv2.drawContours(contour_mask, [contour], -1, 255, thickness=-1)
+        dist_map = cv2.distanceTransform(contour_mask, cv2.DIST_L2, 5)
+        # Reject pixels too close to the edge (1 or 2 pixels)
+        inner_mask = dist_map >= 3.0   # 3 pixels from edge
 
-        patch = depth_u16[y0:y1, x0:x1].astype(np.float32) * self.depth_scale
-        #cv2.rectangle(debug, (x0, y0), (x1, y1), (255, 255, 255), 1)
-        yy, xx = np.ogrid[y0:y1, x0:x1]
-        circle_mask = (xx-u)**2 + (yy-v)**2 <= (rad*rad)
-        cv2.circle(debug, (u,v), rad, (255,255,255), 2)
+        valid = (
+            inner_mask &
+            (contour_mask > 0) &
+            np.isfinite(depth_m) &
+            (depth_m > 0.0) &
+            (depth_m >= self.min_valid_z)
+        )
 
-        # Valid depth filter: finite, positive, and above min_valid_z.
-        valid = np.isfinite(patch) & (patch > 0) & (patch >= self.min_valid_z) & circle_mask
-        if np.count_nonzero(valid) == 0:
-            # No usable depth: publish diagnostics and skip.
+        if not np.any(valid):
             self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
             self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
+            self.pub_test.publish(self.bridge.cv2_to_imgmsg(contour_mask, "mono8"))
             return
-        Z = float(np.median(patch[valid]))
+        Z = float(np.median(depth_m[valid]))
 
         # 4) Pinhole back-projection to 3D (camera optical frame).
         # X = (u - cx) * Z / fx ; Y = (v - cy) * Z / fy
@@ -262,7 +266,7 @@ class BallTrackerSync:
                     rospy.logwarn_throttle(1.0, f"Bad Measurement (distance={dist:.2f})")
                     self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
                     self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
-                    self._last_xyz = (X,Y,Z)  # keep state but do not publish this one
+                    #self._last_xyz = (X,Y,Z)  # keep state but do not publish this one
                     return
         self._last_xyz = (X,Y,Z)
 
@@ -336,6 +340,7 @@ class BallTrackerSync:
                     (u+8, max(20, v-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,220,220), 2, cv2.LINE_AA)
         self.pub_mask.publish(self.bridge.cv2_to_imgmsg(mask, "mono8"))
         self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, "bgr8"))
+        self.pub_test.publish(self.bridge.cv2_to_imgmsg(contour_mask, "mono8"))
 
 if __name__ == "__main__":
     rospy.init_node("ball_tracker_sync")
