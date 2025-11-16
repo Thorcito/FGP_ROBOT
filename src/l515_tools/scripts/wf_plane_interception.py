@@ -41,6 +41,9 @@ class Plane_Interception:
         self.max_step_m     = rospy.get_param("~max_step_m", 0.13)
         self.first_reading = False
 
+        # Offset of cone mouth in EE frame (15 cm along +Z_ee)
+        self.tool_offset_ee = np.array(rospy.get_param("~tool_offset_ee", [0.0, 0.0, 0.12]),dtype=np.float64)
+
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
         self.listener = tf2_ros.TransformListener(self.buf)
@@ -312,7 +315,12 @@ class Plane_Interception:
             else:
                 use_q = q_ee
 
-            # Controller command: EETarget uses Optimization 2 result (as in your code)
+                        # Compute EE origin target so that cone mouth center passes through p_hit
+            R_ee_tgt = self._R_from_quat_xyzw(use_q)          # rotation of EE in world
+            offset_world = R_ee_tgt.dot(self.tool_offset_ee)  # cone offset in world
+            p_ee_target = p_hit - offset_world                # desired EE origin position
+
+            # Controller command
 
             half = float(rospy.get_param("~ee_gate_half_m", 0.50))
             rospy.loginfo({abs(p_hit[1] - p_ee[1])})
@@ -322,9 +330,9 @@ class Plane_Interception:
                 rospy.logerr("BOUNCE DETECTED")
             if inside_square and bounce:
                 msg = EETarget()
-                msg.ee_target.position.x = pt_h.point.x
-                msg.ee_target.position.y = pt_h.point.y
-                msg.ee_target.position.z = pt_h.point.z
+                msg.ee_target.position.x = float(p_ee_target[0])
+                msg.ee_target.position.y = float(p_ee_target[1])
+                msg.ee_target.position.z = float(p_ee_target[2])
                 msg.ee_target.orientation.x = float(use_q[0])
                 msg.ee_target.orientation.y = float(use_q[1])
                 msg.ee_target.orientation.z = float(use_q[2])

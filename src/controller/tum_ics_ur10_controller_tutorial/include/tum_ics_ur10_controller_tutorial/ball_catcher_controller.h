@@ -6,6 +6,10 @@
 #include <tum_ics_ur10_controller_tutorial/trajectories.h>
 #include <tum_ics_ur10_controller_tutorial/EETarget.h>
 #include <std_srvs/Empty.h>
+#include <std_msgs/Empty.h>
+
+ros::Publisher controller_hb_pub_;
+
 
 namespace tum_ics_ur_robot_lli
 {
@@ -81,6 +85,7 @@ namespace tum_ics_ur_robot_lli
       double omega_max_rad_ = 4.2;  // default max tool angular speed [rad/s]
       double v_max_mps_     = 1.7; 
       bool has_goal_ = false;
+      ros::Publisher controller_hb_pub_;
 
 
 

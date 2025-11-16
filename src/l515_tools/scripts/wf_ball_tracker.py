@@ -25,7 +25,7 @@ class BallTrackerSync:
 
         # Transformation to world frame
         self.parent_frame     = rospy.get_param("~parent_frame", "world")
-        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.3026, -0.0604, 0.9295])
+        self.cam_xyz           = rospy.get_param("~camera_xyz", [0.3097, -0.0787, 0.9388])
         self.cam_quat_xyzw     = rospy.get_param("~camera_quat_xyzw", [-0.5, -0.5, 0.5, 0.5])  # x y z w
         self.rot_angle = rospy.get_param("~rot_angle", 0)
         self.static_sent = False

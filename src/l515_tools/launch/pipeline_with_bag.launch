@@ -33,14 +33,17 @@
               /world_ball_pred/path_filt
               /world_ball_pred/pred_point
               /world_ball_pred/pred_path
-              ee_target
+              /ee_target
               /PlaneInt/hit_point
               /PlaneInt/hit_time_s
               /PlaneInt/hit_history
               /PlaneInt/static_plane
               /PlaneInt/pred_vel_hit
               /cartesian_path
+              /testBallCatcherController/cartesian_path
               /joint_states
+              /ursa_joint_states
+              /controller_heartbeat
               /tf
               /tf_static" />
 </launch>

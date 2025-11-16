@@ -5,6 +5,7 @@
 #include <nav_msgs/Path.h>
 #include <ow_core/math.h>
 #include <Eigen/Geometry>
+#include <std_msgs/Empty.h>
 
 namespace tum_ics_ur_robot_lli
 {
@@ -26,6 +27,7 @@ namespace tum_ics_ur_robot_lli
       path_pub_ = nh_.advertise<nav_msgs::Path>("cartesian_path", 1);
       ee_target_sub_ = nh_.subscribe("ee_target", 1, &BallCatcherController::eeTargetCallback, this);
       homing_srv_ = nh_.advertiseService("homing", &BallCatcherController::homingHandler, this);
+      controller_hb_pub_ = nh_.advertise<std_msgs::Empty>("controller_heartbeat", 1);
 
       // robot model
       if (!model_.initRequest(nh_))
@@ -293,7 +295,8 @@ namespace tum_ics_ur_robot_lli
         tau_ = cartesian_space_controller(current, cs_ref, period);
         //ROS_INFO_STREAM("VELOCITAAAT: " << current.qp.transpose());
       }
-
+      std_msgs::Empty hb;
+      controller_hb_pub_.publish(hb);
       return tau_;
     }
 
@@ -363,7 +366,7 @@ namespace tum_ics_ur_robot_lli
         double ang_err = dx.tail<3>().norm();   // radians of orientation error
         //ROS_INFO_STREAM_THROTTLE(0.1, "ANGLE: " << ang_err);
         //ROS_INFO_STREAM_THROTTLE(0.1, "Δt: " << delta_time << " s");
-        ROS_INFO_STREAM("ERROR: " << pos_err << "m ANGLE: " << ang_err << "rad Δt: " << delta_time << " s");
+        //ROS_INFO_STREAM("ERROR: " << pos_err << "m ANGLE: " << ang_err << "rad Δt: " << delta_time << " s");
         if (pos_err < 0.01 && lin_spd < 0.1 && ang_err < 0.05) { 
           ROS_WARN_STREAM("PARA IDLE");
           //ROS_WARN_STREAM("ERROR: " << pos_err);
@@ -504,7 +507,7 @@ namespace tum_ics_ur_robot_lli
         cs_spline_duration_ = msg->duration;
         start_cartesian_spline_ = true;
         has_goal_ = true;
-        ROS_ERROR_STREAM("NEW EE GOAL: " << X_goal_.transpose() << "TtoGo: " << cs_spline_duration_);
+        ROS_ERROR_STREAM("NEW EE GOAL: " << X_goal_.transpose() << "  TtoGo: " << cs_spline_duration_ << " s");
       } else {
         // No restart; just update the stored goal quietly (optional)
         X_goal_ = X_new;
