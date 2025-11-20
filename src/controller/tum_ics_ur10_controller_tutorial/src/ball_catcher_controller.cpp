@@ -6,6 +6,7 @@
 #include <ow_core/math.h>
 #include <Eigen/Geometry>
 #include <std_msgs/Empty.h>
+#include <geometry_msgs/PointStamped.h>
 
 namespace tum_ics_ur_robot_lli
 {
@@ -28,6 +29,7 @@ namespace tum_ics_ur_robot_lli
       ee_target_sub_ = nh_.subscribe("ee_target", 1, &BallCatcherController::eeTargetCallback, this);
       homing_srv_ = nh_.advertiseService("homing", &BallCatcherController::homingHandler, this);
       controller_hb_pub_ = nh_.advertise<std_msgs::Empty>("controller_heartbeat", 1);
+      controller_ee_pub_ = nh_.advertise<geometry_msgs::PointStamped>("controller_ee", 1);
 
       // robot model
       if (!model_.initRequest(nh_))
@@ -210,8 +212,8 @@ namespace tum_ics_ur_robot_lli
       ROS_WARN_STREAM_THROTTLE(0.5, "state: " << state_);
 
       model_.broadcastFrames(current.q, ros::Time::now());
-
-      ROS_INFO_STREAM_THROTTLE(0.5, "X_ee_w: " << ow::CartesianPosition(model_.T_tool_0(current.q)).transpose());
+      ow::CartesianPosition X_ee = ow::CartesianPosition(model_.T_tool_0(current.q));
+      ROS_INFO_STREAM_THROTTLE(0.5, "X_ee_w: " << X_ee.transpose());
 
       //ROS_INFO_STREAM("VELOCITY: " << current.qp.transpose());
       //ROS_INFO_STREAM("ACCELERATION: " << current.qpp.transpose());
@@ -297,6 +299,13 @@ namespace tum_ics_ur_robot_lli
       }
       std_msgs::Empty hb;
       controller_hb_pub_.publish(hb);
+      geometry_msgs::PointStamped ee_pos;
+      ee_pos.header.stamp = t;
+      ee_pos.header.frame_id = "ur10_model_dh_5";
+      ee_pos.point.x = X_ee(0);
+      ee_pos.point.y = X_ee(1);
+      ee_pos.point.z = X_ee(2);
+      controller_ee_pub_.publish(ee_pos);
       return tau_;
     }
 

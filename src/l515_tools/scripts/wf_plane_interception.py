@@ -42,7 +42,7 @@ class Plane_Interception:
         self.first_reading = False
 
         # Offset of cone mouth in EE frame (15 cm along +Z_ee)
-        self.tool_offset_ee = np.array(rospy.get_param("~tool_offset_ee", [0.0, 0.0, 0.12]),dtype=np.float64)
+        self.tool_offset_ee = np.array(rospy.get_param("~tool_offset_ee", [0.0, 0.0, 0.0]),dtype=np.float64) #[0.0, 0.0, 0.12]
 
         # -------- TF2 --------
         self.buf = tf2_ros.Buffer(cache_time=rospy.Duration(2.0))
@@ -51,6 +51,7 @@ class Plane_Interception:
         # -------- pubs --------
         self.pub = rospy.Publisher("ee_target", EETarget, queue_size=1)
         self.pub_hit_point = rospy.Publisher("/PlaneInt/hit_point", PointStamped, queue_size=10)
+        self.pub_ee_point = rospy.Publisher("/PlaneInt/end_effector", PointStamped, queue_size=10)
         self.pub_hit_time  = rospy.Publisher("/PlaneInt/hit_time_s", Float32, queue_size=10)
         self.pub_hit_history = rospy.Publisher("/PlaneInt/hit_history", Path, queue_size=10)
         self.pub_markers_static = rospy.Publisher("/PlaneInt/static_plane", Marker, queue_size=1, latch=True)
@@ -281,6 +282,10 @@ class Plane_Interception:
             pt_h.header = hdr
             pt_h.point.x, pt_h.point.y, pt_h.point.z = float(p_hit[0]), float(p_hit[1]), float(p_hit[2])
             self.pub_hit_point.publish(pt_h)
+            pt_ee = PointStamped()
+            pt_ee.header = hdr
+            pt_ee.point.x, pt_ee.point.y, pt_ee.point.z = float(p_ee[0]), float(p_ee[1]), float(p_ee[2])
+            self.pub_ee_point.publish(pt_ee)
             self.pub_hit_time.publish(Float32(data=float(t_hit)))
             rospy.loginfo_throttle(0.0, f"Time to intercept: (t={t_hit:.6f})")
 

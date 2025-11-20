@@ -34,6 +34,7 @@
               /world_ball_pred/pred_point
               /world_ball_pred/pred_path
               /ee_target
+              /PlaneInt/end_effector
               /PlaneInt/hit_point
               /PlaneInt/hit_time_s
               /PlaneInt/hit_history
@@ -44,6 +45,7 @@
               /joint_states
               /ursa_joint_states
               /controller_heartbeat
+              /controller_ee
               /tf
               /tf_static" />
 </launch>

@@ -8,8 +8,6 @@
 #include <std_srvs/Empty.h>
 #include <std_msgs/Empty.h>
 
-ros::Publisher controller_hb_pub_;
-
 
 namespace tum_ics_ur_robot_lli
 {
@@ -86,6 +84,7 @@ namespace tum_ics_ur_robot_lli
       double v_max_mps_     = 1.7; 
       bool has_goal_ = false;
       ros::Publisher controller_hb_pub_;
+      ros::Publisher controller_ee_pub_;
 
 
 
