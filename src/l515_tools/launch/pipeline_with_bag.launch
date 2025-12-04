@@ -46,6 +46,8 @@
               /ursa_joint_states
               /controller_heartbeat
               /controller_ee
+              /controller_ref_pose
+              /controller_ref_vel
               /tf
               /tf_static" />
 </launch>

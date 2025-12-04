@@ -74,17 +74,10 @@ namespace tum_ics_ur_robot_lli
       double cs_spline_duration_;
 
       //Nads variables
-      ow::CartesianPosition X_start_;
-      bool start_interpolation = false;
-      double duration_ ;
-      Vector3d p0_, p1_, dp_ ;
-      JointState last_current_;
-      Eigen::Quaterniond q0_, q1_;
-      double omega_max_rad_ = 4.2;  // default max tool angular speed [rad/s]
-      double v_max_mps_     = 1.7; 
-      bool has_goal_ = false;
       ros::Publisher controller_hb_pub_;
       ros::Publisher controller_ee_pub_;
+      ros::Publisher ref_pose_pub_;
+      ros::Publisher ref_vel_pub_;
 
 
 
