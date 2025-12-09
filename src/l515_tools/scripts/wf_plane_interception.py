@@ -29,7 +29,7 @@ class Plane_Interception:
         self.dir_alpha = float(rospy.get_param("~dir_alpha", 0.5))
 
         #Plane of interception
-        self.x_plane_m  = float(rospy.get_param("~x_plane_m", -0.7))
+        self.x_plane_m  = float(rospy.get_param("~x_plane_m", -0.60))
         self.hit_horizon_s = float(rospy.get_param("~hit_horizon_s", 1.0))
         self.hit_history_max = int(rospy.get_param("~hit_history_max", 20))
 

@@ -295,13 +295,13 @@ namespace tum_ics_ur_robot_lli
       // reference
       JointState js_r;
       js_r.qp = ref.qP() - Kp_j_ * q_delta;
-      constexpr double QDOT_MAX = 2.62;  // almost 120 deg/s in rad/s
+      constexpr double QDOT_MAX = 2.53;  // almost 145 deg/s in rad/s
       for (int i = 0; i < 6; ++i) {
         if (js_r.qp[i] >  QDOT_MAX) js_r.qp[i] =  QDOT_MAX;
         if (js_r.qp[i] < -QDOT_MAX) js_r.qp[i] = -QDOT_MAX;
       }
       js_r.qpp = ref.qPP() - Kp_j_ * qp_delta;
-      constexpr double QDDOT_MAX = 6.86; // rad/s^2 
+      constexpr double QDDOT_MAX = 6.4; // rad/s^2 
       for (int i = 0; i < 6; ++i) {
         if (js_r.qpp[i] >  QDDOT_MAX) js_r.qpp[i] =  QDDOT_MAX;
         if (js_r.qpp[i] < -QDDOT_MAX) js_r.qpp[i] = -QDDOT_MAX;
@@ -346,13 +346,15 @@ namespace tum_ics_ur_robot_lli
 
       JointState js_r;
       js_r.qp = J_tool_0.inverse() * Xp_r;
-      constexpr double QDOT_MAX = 2.62;  // almost 120 deg/s in rad/s
+      ROS_INFO_STREAM_THROTTLE(0.5, "Desired Joint Velocities: " << js_r.qp.transpose());
+      constexpr double QDOT_MAX = 2.53;  // almost 145 deg/s in rad/s
       for (int i = 0; i < 6; ++i) {
         if (js_r.qp[i] >  QDOT_MAX) js_r.qp[i] =  QDOT_MAX;
         if (js_r.qp[i] < -QDOT_MAX) js_r.qp[i] = -QDOT_MAX;
       }
+      ROS_INFO_STREAM_THROTTLE(0.5, "Desired Joint Velocities Filtered: " << js_r.qp.transpose());
       js_r.qpp = J_tool_0.inverse() * (Xpp_r - Jp_tool_0 * js_r.qp);
-      constexpr double QDDOT_MAX = 6.86; // rad/s^2 
+      constexpr double QDDOT_MAX = 6.4; // rad/s^2 
       for (int i = 0; i < 6; ++i) {
         if (js_r.qpp[i] >  QDDOT_MAX) js_r.qpp[i] =  QDDOT_MAX;
         if (js_r.qpp[i] < -QDDOT_MAX) js_r.qpp[i] = -QDDOT_MAX;
