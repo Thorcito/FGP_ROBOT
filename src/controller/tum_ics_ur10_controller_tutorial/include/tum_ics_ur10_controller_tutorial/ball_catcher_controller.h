@@ -7,6 +7,10 @@
 #include <tum_ics_ur10_controller_tutorial/EETarget.h>
 #include <std_srvs/Empty.h>
 #include <std_msgs/Empty.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/TwistStamped.h>
+#include <std_msgs/Float32.h>
+
 
 
 namespace tum_ics_ur_robot_lli
@@ -78,6 +82,18 @@ namespace tum_ics_ur_robot_lli
       ros::Publisher controller_ee_pub_;
       ros::Publisher ref_pose_pub_;
       ros::Publisher ref_vel_pub_;
+      ros::Subscriber desired_pose_sub_;
+      ros::Subscriber desired_twist_sub_;
+      ros::Subscriber desired_time_sub_;
+
+      bool have_des_pose_{false};
+      bool have_des_twist_{false};
+      bool have_des_time_{false};
+
+      ow::CartesianPosition X_des_;
+      ow::CartesianVelocity V_des_;
+      double T_des_{0.0};
+      ros::Time des_stamp_;
 
 
 
@@ -114,6 +130,12 @@ namespace tum_ics_ur_robot_lli
       void start_cartesian_spline(const JointState &current, const ow::CartesianPosition &goal, double spline_duration);
 
       void eeTargetCallback(const tum_ics_ur10_controller_tutorial::EETargetConstPtr &msg);
+
+      void desiredPoseCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+
+      void desiredTwistCallback(const geometry_msgs::TwistStampedConstPtr &msg);
+
+      void desiredTimeCallback(const std_msgs::Float32ConstPtr &msg);
 
       bool homingHandler(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res);
 

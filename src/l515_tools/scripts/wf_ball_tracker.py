@@ -271,7 +271,7 @@ class BallTrackerSync:
         self._last_xyz = (X,Y,Z)
 
         # Use the RGB timestamp as the synchronized stamp for outputs.
-        stamp = rgb_msg.header.stamp
+        stamp_out = rospy.Time.now()
 
         # Latency (diagnostic): processing time from callback start to now.
         t_pub = rospy.Time.now()
@@ -281,7 +281,7 @@ class BallTrackerSync:
 
         # 5) Publish point (for numeric consumers / PlotJuggler).
         pt = PointStamped()
-        pt.header = Header(stamp=stamp, frame_id=self.frame_id)
+        pt.header = Header(stamp=stamp_out, frame_id=self.frame_id)
         pt.point.x, pt.point.y, pt.point.z = X, Y, Z
         self.pub_point.publish(pt)
         rospy.loginfo(f"Point: ({X}, {Y}, {Z})")
@@ -307,8 +307,10 @@ class BallTrackerSync:
 
         #6) Publish point on world frame
         try:
-            Tcw = self.buf.lookup_transform(self.parent_frame, self.frame_id, stamp, rospy.Duration(0.05))
+            Tcw = self.buf.lookup_transform(self.parent_frame, self.frame_id, rospy.Time(0), rospy.Duration(0.05))
             point_world = do_transform_point(pt, Tcw)
+            point_world.header.stamp = stamp_out
+            point_world.header.frame_id = self.parent_frame
         except Exception as e:
             rospy.logwarn_throttle(1.0, f"Transformation to World ERROR: {e}")
             return

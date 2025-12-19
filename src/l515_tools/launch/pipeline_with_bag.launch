@@ -17,6 +17,13 @@
     <!-- interception params -->
   </node>
 
+  <!-- Trajectory Planning -->
+  <node pkg="l515_tools" type="trap_traj_generator.py" name="trap_traj_generator" output="screen">
+    <!-- interception params -->
+  </node>
+
+
+
   <!-- BallCatcherController -->
   <include file="$(find tum_ics_ur10_controller_tutorial)/launch/testBallCatcherController.launch" />
 
@@ -48,6 +55,9 @@
               /controller_ee
               /controller_ref_pose
               /controller_ref_vel
+              /desired_pose
+              /desired_twist
+              /desired_time
               /tf
               /tf_static" />
 </launch>

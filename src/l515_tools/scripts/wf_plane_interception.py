@@ -51,7 +51,7 @@ class Plane_Interception:
         # -------- pubs --------
         self.pub = rospy.Publisher("ee_target", EETarget, queue_size=1)
         self.pub_hit_point = rospy.Publisher("/PlaneInt/hit_point", PointStamped, queue_size=10)
-        self.pub_ee_point = rospy.Publisher("/PlaneInt/end_effector", PointStamped, queue_size=10)
+        self.pub_ee_pose = rospy.Publisher("/PlaneInt/end_effector", PoseStamped, queue_size=10)
         self.pub_hit_time  = rospy.Publisher("/PlaneInt/hit_time_s", Float32, queue_size=10)
         self.pub_hit_history = rospy.Publisher("/PlaneInt/hit_history", Path, queue_size=10)
         self.pub_markers_static = rospy.Publisher("/PlaneInt/static_plane", Marker, queue_size=1, latch=True)
@@ -267,7 +267,7 @@ class Plane_Interception:
             step = math.sqrt(dx*dx + dy*dy + dz*dz)
             delta_t = abs(t_hit - self.last_t_hit)
             rospy.logerr(f"Step: {step}, Time: {delta_t} ")
-            if step > self.max_step_m and delta_t > 0.2:
+            if step > self.max_step_m or delta_t > 0.2:
                 rospy.logerr_throttle(0.0, f"Distance ({step}) or Time Gate ({delta_t}) ")
                 self.old_x, self.old_y, self.old_z = p_hit[0], p_hit[1], p_hit[2]
                 self.last_t_hit = t_hit
@@ -282,10 +282,22 @@ class Plane_Interception:
             pt_h.header = hdr
             pt_h.point.x, pt_h.point.y, pt_h.point.z = float(p_hit[0]), float(p_hit[1]), float(p_hit[2])
             self.pub_hit_point.publish(pt_h)
-            pt_ee = PointStamped()
-            pt_ee.header = hdr
-            pt_ee.point.x, pt_ee.point.y, pt_ee.point.z = float(p_ee[0]), float(p_ee[1]), float(p_ee[2])
-            self.pub_ee_point.publish(pt_ee)
+            ee_pose = PoseStamped()
+            ee_pose.header = hdr
+            ee_pose.pose.position.x = float(p_ee[0])
+            ee_pose.pose.position.y = float(p_ee[1])
+            ee_pose.pose.position.z = float(p_ee[2])
+
+            # orientation from TF lookup (q_ee = [x,y,z,w])
+            ee_pose.pose.orientation.x = float(q_ee[0])
+            ee_pose.pose.orientation.y = float(q_ee[1])
+            ee_pose.pose.orientation.z = float(q_ee[2])
+            ee_pose.pose.orientation.w = float(q_ee[3])
+
+            self.pub_ee_pose.publish(ee_pose)
+
+
+
             self.pub_hit_time.publish(Float32(data=float(t_hit)))
             rospy.loginfo_throttle(0.0, f"Time to intercept: (t={t_hit:.6f})")
 
@@ -342,8 +354,15 @@ class Plane_Interception:
                 msg.ee_target.orientation.y = float(use_q[1])
                 msg.ee_target.orientation.z = float(use_q[2])
                 msg.ee_target.orientation.w = float(use_q[3])
-                msg.duration = t_hit
+                age  = (rospy.Time.now() - stamp).to_sec()
+                T_go = t_hit - age
+                # add a small compensation for actuation/loop delay
+                delay = 0.01   # start with 50 ms, tune later
+                T_cmd = max(0.0, T_go - delay)
+                msg.duration = T_cmd
                 self.pub.publish(msg)
+                rospy.logwarn(f"t_hit={t_hit:.3f} age={age:.3f} T_go={T_go:.3f} delay={delay:.3f} T_cmd={T_cmd:.3f}")
+
 
         self.old_x, self.old_y, self.old_z = p_hit[0], p_hit[1], p_hit[2]
         self.last_t_hit = t_hit
